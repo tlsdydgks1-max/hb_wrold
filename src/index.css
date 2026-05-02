@@ -1,0 +1,103 @@
+:root {
+  --board-scale: 0.96;
+  --app-height: 100vh;
+  --app-background: linear-gradient(
+    135deg,
+    #e6f8ff 0%,
+    #f7ecff 42%,
+    #ffe0f0 68%,
+    #d7f3ff 100%
+  );
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html,
+body {
+  margin: 0;
+  width: 100%;
+  height: var(--app-height);
+  min-width: 320px;
+  min-height: var(--app-height);
+  overflow: hidden;
+  overscroll-behavior: none;
+  background: var(--app-background);
+  background-size: 100% 100%;
+}
+
+body {
+  display: flex;
+  position: relative;
+  margin: 0;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+#root {
+  position: relative;
+  width: 100%;
+  height: var(--app-height);
+  min-height: var(--app-height);
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  isolation: isolate;
+  background:
+    linear-gradient(120deg, rgba(255, 255, 255, 0.38), transparent 34%, rgba(134, 207, 244, 0.18)),
+    repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.18) 0 1px, transparent 1px 18px),
+    var(--app-background);
+  background-size: 100% 100%, auto, 100% 100%;
+}
+
+#root::before {
+  content: none;
+}
+
+.game-stage {
+  width: 100%;
+  flex: 1 1 auto;
+  position: relative;
+  z-index: 1;
+}
+
+html.hb-booting .game-stage *,
+html.hb-viewport-changing .game-stage,
+html.hb-viewport-changing .game-stage * {
+  transition: none !important;
+  animation: none !important;
+}
+
+html.hb-viewport-changing .hb-board-stage,
+html.hb-viewport-changing .hb-dice-panel,
+html.hb-viewport-changing .hb-dice-layer {
+  filter: none !important;
+  will-change: auto !important;
+}
+
+@media (hover: none) and (pointer: coarse) {
+  *,
+  *::before,
+  *::after {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+
+  .hb-board-stage,
+  .hb-board-stage *,
+  .hb-dice-panel,
+  .hb-dice-layer,
+  .hb-dice-layer canvas {
+    filter: none !important;
+  }
+
+  .hb-board-stage,
+  .hb-dice-panel,
+  .hb-dice-layer {
+    will-change: auto !important;
+  }
+}

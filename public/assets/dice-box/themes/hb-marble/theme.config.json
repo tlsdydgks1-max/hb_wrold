@@ -1,0 +1,20 @@
+{
+  "name": "HB Marble Bright Numbers",
+  "systemName": "hb-marble",
+  "author": "HB World",
+  "version": 1,
+  "meshFile": "default.json",
+  "material": {
+    "type": "color",
+    "diffuseTexture": {
+      "light": "diffuse-light.png",
+      "dark": "diffuse-dark.png"
+    },
+    "diffuseLevel": 1.38,
+    "bumpTexture": "normal.png",
+    "bumpLevel": 0.42,
+    "specularTexture": "specular.jpg",
+    "specularPower": 2.35
+  },
+  "diceAvailable": ["d6"]
+}
