@@ -1,8 +1,16 @@
 import { Avatar, Box, Stack } from "@mui/material";
+import { alpha, useTheme } from "@mui/material/styles";
 import { NumberToMoney } from "@/util/numberToMoney";
 
-const User = ({ data, rank, anchor = "left", sx }) => {
+const User = ({ data, rank, anchor = "left", isActive = false, sx }) => {
+  const theme = useTheme();
   const isRight = anchor === "right";
+  const userColor =
+    data.color?.split(".").reduce((value, key) => value?.[key], theme.palette) ||
+    data.color;
+  const activeBorderColor = userColor
+    ? alpha(userColor, 0.62)
+    : "rgba(87,213,232,0.78)";
 
   return (
     <Box
@@ -20,13 +28,15 @@ const User = ({ data, rank, anchor = "left", sx }) => {
           ? { xs: 2.65, sm: 3.4, md: 4.4, lg: 5.25 }
           : { xs: 0.55, sm: 0.75, md: 1, lg: 1.25 },
         color: "#285077",
+        opacity: data.connected === false ? 0.62 : 1,
         borderRadius: { xs: "11px", sm: "13px", md: "16px", lg: "18px" },
         background:
           "linear-gradient(180deg, rgba(255,255,255,0.72), rgba(223,247,255,0.42))",
         border: "1px solid rgba(255,255,255,0.82)",
         backdropFilter: "blur(16px) saturate(1.32)",
-        boxShadow:
-          "0 18px 32px rgba(90,151,204,0.22), inset 0 1px 0 rgba(255,255,255,0.92)",
+        boxShadow: isActive
+          ? `0 18px 32px rgba(90,151,204,0.24), 0 0 0 3px ${activeBorderColor}, inset 0 1px 0 rgba(255,255,255,0.92)`
+          : "0 18px 32px rgba(90,151,204,0.22), inset 0 1px 0 rgba(255,255,255,0.92)",
         position: "relative",
         ...sx,
       }}
@@ -41,7 +51,9 @@ const User = ({ data, rank, anchor = "left", sx }) => {
           boxShadow: "0 8px 18px rgba(116,186,220,0.28)",
         }}
       />
-      <Stack sx={{ minWidth: 0, alignItems: isRight ? "flex-end" : "flex-start" }}>
+      <Stack
+        sx={{ minWidth: 0, alignItems: isRight ? "flex-end" : "flex-start" }}
+      >
         <Box
           component="b"
           sx={{
@@ -65,7 +77,21 @@ const User = ({ data, rank, anchor = "left", sx }) => {
         >
           {NumberToMoney(data.money)}
         </Box>
+        {data.connected === false && (
+          <Box
+            component="span"
+            sx={{
+              color: "#6f7f90",
+              fontSize: { xs: 9, sm: 10, md: 11, lg: 12 },
+              fontWeight: 900,
+              lineHeight: 1,
+            }}
+          >
+            연결 끊김
+          </Box>
+        )}
       </Stack>
+
       {rank && (
         <Box
           sx={{
@@ -81,10 +107,9 @@ const User = ({ data, rank, anchor = "left", sx }) => {
             fontSize: { xs: 11, sm: 14, md: 17, lg: 20 },
             fontWeight: 900,
             borderRadius: "50%",
-            background:
-              rank.startsWith("1")
-                ? "linear-gradient(180deg, rgba(65,180,242,0.9), rgba(15,116,200,0.82))"
-                : "linear-gradient(180deg, rgba(255,142,203,0.92), rgba(232,76,158,0.84))",
+            background: rank.startsWith("1")
+              ? "linear-gradient(180deg, rgba(65,180,242,0.9), rgba(15,116,200,0.82))"
+              : "linear-gradient(180deg, rgba(255,142,203,0.92), rgba(232,76,158,0.84))",
             border: "1px solid rgba(255,255,255,0.86)",
             backdropFilter: "blur(12px) saturate(1.25)",
             boxShadow:

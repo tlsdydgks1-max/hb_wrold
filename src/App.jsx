@@ -6,9 +6,11 @@ import DiceRoller from "@/components/Dice";
 import User from "@/components/user";
 import { city as initialCity } from "@/data/city";
 import { goldenKeyCards } from "@/data/goldenKeyCards";
+import { useMultiplayer } from "@/hooks/useMultiplayer";
 import { NumberToMoney } from "@/util/numberToMoney";
 
 import {
+  Alert,
   Box,
   Button,
   Chip,
@@ -18,7 +20,9 @@ import {
   DialogContent,
   DialogTitle,
   IconButton,
+  MenuItem,
   Stack,
+  TextField,
   ToggleButton,
   ToggleButtonGroup,
   Typography,
@@ -31,24 +35,46 @@ import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 import User1 from "@/assets/User1.jpg";
 import User2 from "@/assets/User2.jpg";
 
-const mapWidth = 720;
-const mapHeight = 810;
-const blockWidth = mapWidth / 9;
-const blockHeight = mapHeight / 9;
+const blockWidth = 82;
+const blockHeight = 106;
+const cornerBlockSize = 106;
+const mapWidth = cornerBlockSize * 2 + blockWidth * 7;
+const mapHeight = cornerBlockSize * 2 + blockWidth * 7;
 const SALARY = 300000;
 const BOARD_SIZE = 32;
 const BUILD_ORDER = ["land", "villa", "building", "hotel", "landmark"];
 const MONOPOLY_TOLL_MULTIPLIER = 2;
-const VIEWPORT_SETTLE_DELAY = 260;
-const VIEWPORT_CLASS_CLEAR_DELAY = 90;
-const TOUCH_VIEWPORT_QUERY = "(hover: none) and (pointer: coarse)";
+const HOST_SNAPSHOT_KEY_PREFIX = "hb_world.hostGameState:";
+
+const PLAYER_PRESETS = [
+  {
+    color: "primary.main",
+    img: User1,
+    tokenLabel: "1",
+  },
+  {
+    color: "#ea2f87",
+    img: User2,
+    tokenLabel: "2",
+  },
+  {
+    color: "#21a67a",
+    img: User1,
+    tokenLabel: "3",
+  },
+  {
+    color: "#f19f2d",
+    img: User2,
+    tokenLabel: "4",
+  },
+];
 
 const cloneBoard = () =>
   initialCity.map((tile) => ({
     ...tile,
     costs: tile.costs
       ? Object.fromEntries(
-          Object.entries(tile.costs).map(([key, cost]) => [key, { ...cost }])
+          Object.entries(tile.costs).map(([key, cost]) => [key, { ...cost }]),
         )
       : undefined,
   }));
@@ -61,85 +87,74 @@ const rollFallbackDice = () => [
   Math.floor(Math.random() * 6) + 1,
 ];
 
-const getViewportSize = () => {
-  if (typeof window === "undefined" || typeof document === "undefined") {
-    return { width: 0, height: 0 };
+const createInitialPlayers = (roomPlayers = []) =>
+  roomPlayers.map((roomPlayer, index) => {
+    const preset = PLAYER_PRESETS[index] || PLAYER_PRESETS[0];
+
+    return {
+      id: roomPlayer.playerId,
+      name: roomPlayer.name || `플레이어 ${index + 1}`,
+      img: preset.img,
+      color: preset.color,
+      tokenLabel: preset.tokenLabel,
+      money: 2000000,
+      position: 0,
+      city: [],
+      stop: 0,
+      tollPasses: 0,
+      connected: roomPlayer.connected !== false,
+    };
+  });
+
+const normalizeSnapshotPlayers = (snapshotPlayers = [], roomPlayers = []) =>
+  snapshotPlayers.map((player, index) => {
+    const preset = PLAYER_PRESETS[index] || PLAYER_PRESETS[0];
+    const roomPlayer = roomPlayers.find((item) => item.playerId === player.id);
+
+    return {
+      ...player,
+      img: preset.img,
+      color: player.color || preset.color,
+      tokenLabel: player.tokenLabel || preset.tokenLabel,
+      connected: roomPlayer ? roomPlayer.connected !== false : player.connected,
+    };
+  });
+
+const readHostSnapshot = (roomCode) => {
+  if (!roomCode) return null;
+
+  try {
+    const value = sessionStorage.getItem(`${HOST_SNAPSHOT_KEY_PREFIX}${roomCode}`);
+    return value ? JSON.parse(value) : null;
+  } catch {
+    return null;
   }
-
-  const root = document.documentElement;
-
-  return {
-    width: window.innerWidth || root.clientWidth || 0,
-    height: window.innerHeight || root.clientHeight || 0,
-  };
-};
-
-const getBoardScale = (width, height, isTouch) => {
-  if (isTouch && width > height) {
-    return width <= 760 ? 0.46 : 0.52;
-  }
-
-  if (width <= 390) return 0.45;
-  if (width <= 460) return 0.5;
-  if (width <= 560) return 0.56;
-  if (width <= 660) return 0.64;
-  if (width <= 780) return 0.72;
-  if (width <= 880) return 0.8;
-  if (width <= 980) return 0.88;
-
-  if (!isTouch) {
-    if (height <= 560) return 0.56;
-    if (height <= 650) return 0.64;
-    if (height <= 740) return 0.72;
-    if (height <= 830) return 0.8;
-    if (height <= 920) return 0.88;
-  }
-
-  return 0.96;
-};
-
-const applyViewportVars = () => {
-  if (typeof window === "undefined" || typeof document === "undefined") return;
-
-  const root = document.documentElement;
-  const { width, height } = getViewportSize();
-  const isTouch = window.matchMedia?.(TOUCH_VIEWPORT_QUERY).matches ?? false;
-
-  root.style.setProperty("--app-height", `${height}px`);
-  root.style.setProperty(
-    "--board-scale",
-    String(getBoardScale(width, height, isTouch))
-  );
 };
 
 function App() {
+  const {
+    connectionStatus,
+    room,
+    localPlayerId,
+    isHost,
+    lastEvent,
+    error: multiplayerError,
+    createRoom,
+    joinRoom,
+    startGame,
+    sendPlayerCommand,
+    sendGameSnapshot,
+    clearRoomSession,
+  } = useMultiplayer();
   const diceRollerRef = useRef(null);
   const [tokenLayer, setTokenLayer] = useState(null);
+  const [view, setView] = useState("landing");
+  const [createForm, setCreateForm] = useState({ name: "", maxPlayers: 2 });
+  const [joinForm, setJoinForm] = useState({ name: "", roomCode: "" });
+  const [gameStarted, setGameStarted] = useState(false);
   const [board, setBoard] = useState(cloneBoard);
-  const [user1, setUser1] = useState({
-    id: "user1",
-    name: "하니",
-    img: User1,
-    color: "primary.main",
-    money: 2000000,
-    position: 0,
-    city: [],
-    stop: 0,
-    tollPasses: 0,
-  });
-  const [user2, setUser2] = useState({
-    id: "user2",
-    name: "비니",
-    img: User2,
-    color: "#ea2f87",
-    money: 2000000,
-    position: 0,
-    city: [],
-    stop: 0,
-    tollPasses: 0,
-  });
-
-  const [turn, setTurn] = useState("user1");
+  const [players, setPlayers] = useState([]);
+  const [turn, setTurn] = useState("");
   const [isAction, setIsAction] = useState(false);
   const [isMoving, setIsMoving] = useState(false);
   const [isRolling, setIsRolling] = useState(false);
@@ -150,79 +165,22 @@ function App() {
   const [pendingAction, setPendingAction] = useState(null);
   const [selectedDestination, setSelectedDestination] = useState("");
   const [selectedOlympicCity, setSelectedOlympicCity] = useState("");
+  const [selectedInfoTileIdx, setSelectedInfoTileIdx] = useState(null);
+  const [isInfoDialogOpen, setIsInfoDialogOpen] = useState(false);
   const [winner, setWinner] = useState(null);
+  const [displayGoldenKeyCard, setDisplayGoldenKeyCard] = useState(null);
+  const [displayDestinationTile, setDisplayDestinationTile] = useState(null);
+  const [displayOlympicTile, setDisplayOlympicTile] = useState(null);
+  const [displayWinner, setDisplayWinner] = useState(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isToolDrawerOpen, setIsToolDrawerOpen] = useState(false);
 
-  const players = useMemo(() => ({ user1, user2 }), [user1, user2]);
-  const activePlayer = players[turn];
-  const opponentId = turn === "user1" ? "user2" : "user1";
-
-  useEffect(() => {
-    setTurn(Math.random() > 0.5 ? "user1" : "user2");
-  }, []);
-
-  useEffect(() => {
-    if (typeof window === "undefined" || typeof document === "undefined") {
-      return undefined;
-    }
-
-    const root = document.documentElement;
-    let settleTimer = 0;
-    let clearClassTimer = 0;
-    let frameId = 0;
-
-    const clearFrame = () => {
-      if (!frameId) return;
-      cancelAnimationFrame(frameId);
-      frameId = 0;
-    };
-
-    const settleViewport = () => {
-      clearFrame();
-      frameId = requestAnimationFrame(() => {
-        frameId = requestAnimationFrame(() => {
-          frameId = 0;
-          applyViewportVars();
-          root.classList.remove("hb-booting");
-          clearClassTimer = window.setTimeout(() => {
-            root.classList.remove("hb-viewport-changing");
-          }, VIEWPORT_CLASS_CLEAR_DELAY);
-        });
-      });
-    };
-
-    const scheduleViewportSettle = () => {
-      root.classList.add("hb-viewport-changing");
-      window.clearTimeout(settleTimer);
-      window.clearTimeout(clearClassTimer);
-      settleTimer = window.setTimeout(settleViewport, VIEWPORT_SETTLE_DELAY);
-    };
-
-    applyViewportVars();
-    settleViewport();
-
-    window.addEventListener("resize", scheduleViewportSettle, { passive: true });
-    window.addEventListener("orientationchange", scheduleViewportSettle, {
-      passive: true,
-    });
-    window.addEventListener("hb:viewport-transition", scheduleViewportSettle);
-    window.visualViewport?.addEventListener("resize", scheduleViewportSettle, {
-      passive: true,
-    });
-    document.addEventListener("fullscreenchange", scheduleViewportSettle);
-
-    return () => {
-      clearFrame();
-      window.clearTimeout(settleTimer);
-      window.clearTimeout(clearClassTimer);
-      window.removeEventListener("resize", scheduleViewportSettle);
-      window.removeEventListener("orientationchange", scheduleViewportSettle);
-      window.removeEventListener("hb:viewport-transition", scheduleViewportSettle);
-      window.visualViewport?.removeEventListener("resize", scheduleViewportSettle);
-      document.removeEventListener("fullscreenchange", scheduleViewportSettle);
-    };
-  }, []);
+  const playersById = useMemo(
+    () => Object.fromEntries(players.map((player) => [player.id, player])),
+    [players],
+  );
+  const activePlayer = playersById[turn] || players[0] || null;
+  const canAct = gameStarted && localPlayerId === turn && !winner;
 
   useEffect(() => {
     if (typeof document === "undefined") return undefined;
@@ -242,45 +200,41 @@ function App() {
   useEffect(() => {
     if (winner) return;
 
-    if (user1.money < 0) {
-      setWinner({ ...user2, victoryType: "bankruptcy", loser: user1 });
+    const loser = players.find((player) => player.money < 0);
+    if (loser) {
+      const winnerPlayer = players
+        .filter((player) => player.id !== loser.id)
+        .sort((first, second) => second.money - first.money)[0];
+      setWinner({
+        ...winnerPlayer,
+        victoryType: "bankruptcy",
+        loser,
+      });
       setPendingAction(null);
       setIsAction(false);
-      return;
     }
+  }, [players, winner]);
 
-    if (user2.money < 0) {
-      setWinner({ ...user1, victoryType: "bankruptcy", loser: user2 });
-      setPendingAction(null);
-      setIsAction(false);
+  useEffect(() => {
+    if (winner) {
+      setDisplayWinner(winner);
     }
-  }, [user1, user2, winner]);
+  }, [winner]);
+
+  useEffect(() => {
+    if (pendingAction?.type === "goldenKey") {
+      setDisplayGoldenKeyCard(pendingAction.card);
+    }
+  }, [pendingAction]);
 
   const restartGame = () => {
+    const nextPlayers = createInitialPlayers(room?.players || []);
     setBoard(cloneBoard());
-    setUser1({
-      id: "user1",
-      name: "하니",
-      img: User1,
-      color: "primary.main",
-      money: 2000000,
-      position: 0,
-      city: [],
-      stop: 0,
-      tollPasses: 0,
-    });
-    setUser2({
-      id: "user2",
-      name: "비니",
-      img: User2,
-      color: "#ea2f87",
-      money: 2000000,
-      position: 0,
-      city: [],
-      stop: 0,
-      tollPasses: 0,
-    });
-    setTurn(Math.random() > 0.5 ? "user1" : "user2");
+    setPlayers(nextPlayers);
+    setTurn(
+      nextPlayers[Math.floor(Math.random() * Math.max(nextPlayers.length, 1))]
+        ?.id || "",
+    );
     setIsAction(false);
     setIsMoving(false);
     setIsRolling(false);
@@ -289,13 +243,23 @@ function App() {
     setPendingAction(null);
     setSelectedDestination("");
     setSelectedOlympicCity("");
+    setSelectedInfoTileIdx(null);
+    setIsInfoDialogOpen(false);
     setWinner(null);
+    setDisplayGoldenKeyCard(null);
+    setDisplayDestinationTile(null);
+    setDisplayOlympicTile(null);
   };
 
   const setPlayerById = (playerId, updater) => {
-    const setter = playerId === "user1" ? setUser1 : setUser2;
-    setter((current) =>
-      typeof updater === "function" ? updater(current) : updater
+    setPlayers((currentPlayers) =>
+      currentPlayers.map((player) =>
+        player.id === playerId
+          ? typeof updater === "function"
+            ? updater(player)
+            : updater
+          : player,
+      ),
     );
   };
 
@@ -322,8 +286,6 @@ function App() {
   const toggleFullscreen = () => {
     if (typeof document === "undefined") return;
 
-    window.dispatchEvent(new Event("hb:viewport-transition"));
-
     if (document.fullscreenElement) {
       document.exitFullscreen?.().catch(() => {});
       return;
@@ -336,13 +298,24 @@ function App() {
     toggleFullscreen();
   };
 
+  const getNextPlayerId = (playerId) => {
+    if (!players.length) return playerId;
+
+    const currentIndex = players.findIndex((player) => player.id === playerId);
+    const safeIndex = currentIndex >= 0 ? currentIndex : 0;
+
+    return players[(safeIndex + 1) % players.length]?.id || playerId;
+  };
+
   const endTurn = () => {
     setPendingAction(null);
     setSelectedDestination("");
     setSelectedOlympicCity("");
+    setSelectedInfoTileIdx(null);
+    setIsInfoDialogOpen(false);
     setIsAction(false);
     if (dice1 !== dice2) {
-      setTurn((current) => (current === "user1" ? "user2" : "user1"));
+      setTurn((current) => getNextPlayerId(current));
     }
   };
 
@@ -374,7 +347,8 @@ function App() {
     });
 
   const movePlayer = async (playerId, steps, options = {}) => {
-    const player = players[playerId];
+    const player = playersById[playerId];
+    if (!player) return;
     const passedStart = steps > 0 && player.position + steps >= BOARD_SIZE;
     const finalPosition = normalizePosition(player.position + steps);
 
@@ -388,7 +362,8 @@ function App() {
   };
 
   const movePlayerTo = async (playerId, targetPosition, options = {}) => {
-    const player = players[playerId];
+    const player = playersById[playerId];
+    if (!player) return;
     let steps = targetPosition - player.position;
 
     if (options.forward !== false && steps <= 0) {
@@ -399,7 +374,7 @@ function App() {
   };
 
   const rollDice = async () => {
-    if (winner || isAction || isMoving || isRolling || !diceReady) return;
+    if (!canAct || isAction || isMoving || isRolling || !diceReady) return;
 
     setIsRolling(true);
     let diceValues = rollFallbackDice();
@@ -412,33 +387,40 @@ function App() {
       handleDiceError(error);
     }
 
+    setIsRolling(false);
+    requestCommand({ type: "roll_dice", diceValues });
+  };
+
+  const applyDiceRoll = async (playerId, diceValues) => {
+    if (winner || isAction || isMoving || !diceValues) return;
+
     const [num1, num2] = diceValues;
-    const player = players[turn];
+    const player = playersById[playerId];
+    if (!player) return;
 
     setDice1(num1);
     setDice2(num2);
     setIsAction(true);
-    setIsRolling(false);
 
     if (player.position === 8 && player.stop > 0) {
       if (num1 === num2) {
-        setPlayerById(turn, (current) => ({ ...current, stop: 0 }));
+        setPlayerById(playerId, (current) => ({ ...current, stop: 0 }));
         setMessage("무인도 탈출", "더블이 나와 무인도에서 탈출합니다.");
-        await movePlayer(turn, num1 + num2);
+        await movePlayer(playerId, num1 + num2);
       } else {
         const nextStop = player.stop - 1;
-        setPlayerById(turn, (current) => ({ ...current, stop: nextStop }));
+        setPlayerById(playerId, (current) => ({ ...current, stop: nextStop }));
         setMessage(
           "무인도 대기",
           nextStop
             ? `탈출 실패. ${nextStop}턴 뒤 자동으로 탈출합니다.`
-            : "탈출 실패. 다음 차례부터 이동할 수 있습니다."
+            : "탈출 실패. 다음 차례부터 이동할 수 있습니다.",
         );
       }
       return;
     }
 
-    await movePlayer(turn, num1 + num2);
+    await movePlayer(playerId, num1 + num2);
   };
 
   const resolveTile = (playerId, tile) => {
@@ -469,7 +451,7 @@ function App() {
         } else {
           setMessage(
             "올림픽 개최 불가",
-            "소유한 도시가 없어 개최지를 선택할 수 없습니다."
+            "소유한 도시가 없어 개최지를 선택할 수 없습니다.",
           );
         }
         break;
@@ -478,7 +460,7 @@ function App() {
         setPlayerById(playerId, (player) => ({ ...player, stop: 3 }));
         setMessage(
           "무인도 도착",
-          "3턴 동안 대기합니다. 더블이 나오면 바로 탈출합니다."
+          "3턴 동안 대기합니다. 더블이 나오면 바로 탈출합니다.",
         );
         break;
       case "tax":
@@ -489,8 +471,8 @@ function App() {
           setMessage(
             "국세청",
             `보유 도시 ${ownedCount}개 기준으로 ${NumberToMoney(
-              tax
-            )}을 납부했습니다.`
+              tax,
+            )}을 납부했습니다.`,
           );
         }
         break;
@@ -507,7 +489,7 @@ function App() {
 
   const applyGoldenKey = (playerId, card) => {
     const effect = card.effect;
-    const otherId = playerId === "user1" ? "user2" : "user1";
+    const otherId = getNextPlayerId(playerId);
 
     switch (effect.type) {
       case "money":
@@ -555,7 +537,8 @@ function App() {
   };
 
   const buildCity = (tile, type) => {
-    const player = players[turn];
+    const player = playersById[turn];
+    if (!player) return;
     const cost = tile.costs[type];
     const isUpgrade = tile.owner?.id === player.id;
 
@@ -571,7 +554,7 @@ function App() {
                 type,
               },
             }
-          : item
+          : item,
       );
 
       if (tile.kind === "resort" && ownsAllResorts(player.id, nextBoard)) {
@@ -585,7 +568,7 @@ function App() {
       money: current.money - cost.build,
       city: isUpgrade
         ? current.city.map((item) =>
-            item.idx === tile.idx ? { ...item, type } : item
+            item.idx === tile.idx ? { ...item, type } : item,
           )
         : [...current.city, { idx: tile.idx, name: tile.name, type }],
     }));
@@ -593,7 +576,8 @@ function App() {
   };
 
   const payToll = (tile) => {
-    const player = players[turn];
+    const player = playersById[turn];
+    if (!player) return;
     const ownerId = tile.owner.id;
     const cost = getToll(tile);
 
@@ -616,7 +600,8 @@ function App() {
       return;
     }
 
-    const player = players[turn];
+    const player = playersById[turn];
+    if (!player) return;
     const ownerId = tile.owner.id;
     const buildCost = tile.costs[tile.owner.type].build;
     const toll = getToll(tile);
@@ -635,8 +620,8 @@ function App() {
                 type: tile.owner.type,
               },
             }
-          : item
-      )
+          : item,
+      ),
     );
     setPlayerById(turn, (current) => ({
       ...current,
@@ -676,7 +661,8 @@ function App() {
 
     const sameColorTiles = board.filter(
       (tile) =>
-        tile.color === color && (tile.kind === "city" || tile.kind === "resort")
+        tile.color === color &&
+        (tile.kind === "city" || tile.kind === "resort"),
     );
 
     return (
@@ -689,22 +675,18 @@ function App() {
     board.filter(
       (tile) =>
         (tile.kind === "city" || tile.kind === "resort") &&
-        tile.owner?.id === playerId
+        tile.owner?.id === playerId,
     );
 
-  const buildableTiles = board.filter(
-    (tile) => tile.kind === "city" || tile.kind === "resort"
+  const worldTravelDestinations = board.filter(
+    (tile) => tile.kind !== "worldTravel",
   );
-  const selectedDestinationTile = board.find(
-    (tile) => tile.idx === Number(selectedDestination)
-  );
-  const selectedOlympicTile = board.find(
-    (tile) => tile.idx === Number(selectedOlympicCity)
+  const selectedInfoTile = board.find(
+    (tile) => tile.idx === selectedInfoTileIdx,
   );
 
   const isWorldTravelTarget = (tile) =>
-    pendingAction?.type === "worldTravel" &&
-    (tile.kind === "city" || tile.kind === "resort");
+    pendingAction?.type === "worldTravel" && tile.kind !== "worldTravel";
 
   const isOlympicTarget = (tile) =>
     pendingAction?.type === "olympic" &&
@@ -714,45 +696,344 @@ function App() {
   const handleBlockClick = (tile) => {
     if (!tile) return;
 
-    if (isWorldTravelTarget(tile)) {
+    if (canAct && isWorldTravelTarget(tile)) {
       setSelectedDestination(String(tile.idx));
+      setDisplayDestinationTile(tile);
       return;
     }
 
-    if (isOlympicTarget(tile)) {
+    if (canAct && isOlympicTarget(tile)) {
       setSelectedOlympicCity(String(tile.idx));
+      setDisplayOlympicTile(tile);
+      return;
+    }
+
+    if (tile.kind === "city" || tile.kind === "resort") {
+      setSelectedInfoTileIdx(tile.idx);
+      setIsInfoDialogOpen(true);
     }
   };
 
-  const selectWorldTravelDestination = async () => {
+  const closeTileInfo = () => {
+    setIsInfoDialogOpen(false);
+  };
+
+  const cancelWorldTravelSelection = () => {
+    setSelectedDestination("");
+  };
+
+  const selectWorldTravelDestination = () => {
     const destination = Number(selectedDestination);
+    if (Number.isNaN(destination)) return;
+    requestCommand({ type: "select_world_travel", tileIdx: destination });
+  };
+
+  const applyWorldTravelDestination = async (playerId, destination) => {
     if (Number.isNaN(destination)) return;
     setPendingAction(null);
     setSelectedDestination("");
-    await movePlayerTo(turn, destination);
+    await movePlayerTo(playerId, destination);
+  };
+
+  const cancelOlympicSelection = () => {
+    setSelectedOlympicCity("");
   };
 
   const selectOlympicCity = () => {
     const destination = Number(selectedOlympicCity);
+    if (Number.isNaN(destination)) return;
+    requestCommand({ type: "select_olympic_city", tileIdx: destination });
+  };
+
+  const applyOlympicCity = (destination) => {
     if (Number.isNaN(destination)) return;
 
     setBoard((currentBoard) =>
       currentBoard.map((tile) => ({
         ...tile,
         olympicHost: tile.idx === destination,
-      }))
+      })),
     );
     setSelectedOlympicCity("");
     setMessage(
       "올림픽 개최",
       `${
         board.find((tile) => tile.idx === destination)?.name
-      }의 통행료가 2배가 됩니다.`
+      }의 통행료가 2배가 됩니다.`,
     );
   };
 
-  const activeTile = board[activePlayer.position];
-  const isDiceDisabled = !!winner || isAction || isMoving || isRolling || !diceReady;
+  const applySnapshot = (snapshot) => {
+    if (!snapshot) return;
+
+    setBoard(snapshot.board || cloneBoard());
+    setPlayers(
+      normalizeSnapshotPlayers(snapshot.players || [], room?.players || []),
+    );
+    setTurn(snapshot.turn || "");
+    setIsAction(!!snapshot.isAction);
+    setIsMoving(!!snapshot.isMoving);
+    setIsRolling(!!snapshot.isRolling);
+    setDice1(snapshot.dice1 || 1);
+    setDice2(snapshot.dice2 || 1);
+    setPendingAction(snapshot.pendingAction || null);
+    setWinner(snapshot.winner || null);
+    setGameStarted(!!snapshot.gameStarted);
+    setView("game");
+  };
+
+  const initializeGame = (targetRoom) => {
+    const nextPlayers = createInitialPlayers(targetRoom?.players || []);
+    const firstTurn =
+      nextPlayers[Math.floor(Math.random() * Math.max(nextPlayers.length, 1))]
+        ?.id || "";
+
+    setBoard(cloneBoard());
+    setPlayers(nextPlayers);
+    setTurn(firstTurn);
+    setIsAction(false);
+    setIsMoving(false);
+    setIsRolling(false);
+    setDice1(1);
+    setDice2(1);
+    setPendingAction(null);
+    setSelectedDestination("");
+    setSelectedOlympicCity("");
+    setWinner(null);
+    setGameStarted(true);
+    setView("game");
+  };
+
+  const executeCommand = async (command, actorId) => {
+    if (!isHost || !command || actorId !== turn || winner || isMoving) return;
+
+    switch (command.type) {
+      case "roll_dice":
+        await applyDiceRoll(actorId, command.diceValues);
+        break;
+      case "build_city": {
+        const tile = board.find((item) => item.idx === command.tileIdx);
+        if (tile) buildCity(tile, command.buildType);
+        break;
+      }
+      case "pay_toll": {
+        const tile = board.find((item) => item.idx === command.tileIdx);
+        if (tile) payToll(tile);
+        break;
+      }
+      case "acquire_city": {
+        const tile = board.find((item) => item.idx === command.tileIdx);
+        if (tile) acquireCity(tile);
+        break;
+      }
+      case "resolve_golden_key":
+        await resolveGoldenKeyMovement();
+        break;
+      case "select_world_travel":
+        await applyWorldTravelDestination(actorId, Number(command.tileIdx));
+        break;
+      case "select_olympic_city":
+        applyOlympicCity(Number(command.tileIdx));
+        break;
+      case "end_turn":
+        endTurn();
+        break;
+      default:
+        break;
+    }
+  };
+
+  const requestCommand = (command) => {
+    if (!canAct) return;
+
+    if (isHost) {
+      executeCommand(command, localPlayerId);
+      return;
+    }
+
+    sendPlayerCommand(command);
+  };
+
+  const snapshot = useMemo(
+    () => ({
+      gameStarted,
+      board,
+      players,
+      turn,
+      isAction,
+      isMoving,
+      isRolling,
+      dice1,
+      dice2,
+      pendingAction,
+      winner,
+    }),
+    [
+      board,
+      dice1,
+      dice2,
+      gameStarted,
+      isAction,
+      isMoving,
+      isRolling,
+      pendingAction,
+      players,
+      turn,
+      winner,
+    ],
+  );
+
+  const handledEventIdRef = useRef(null);
+
+  useEffect(() => {
+    if (!lastEvent || handledEventIdRef.current === lastEvent.eventId) return;
+
+    handledEventIdRef.current = lastEvent.eventId;
+
+    switch (lastEvent.type) {
+      case "room_created":
+      case "join_accepted":
+      case "reconnect": {
+        const targetRoom = lastEvent.payload?.room;
+        const enteringGame = targetRoom?.status === "game";
+        setView(enteringGame ? "game" : "lobby");
+        setGameStarted(enteringGame);
+        if (enteringGame && isHost) {
+          const savedSnapshot = readHostSnapshot(targetRoom.code);
+          if (savedSnapshot) {
+            applySnapshot(savedSnapshot);
+          }
+        }
+        break;
+      }
+      case "start_game": {
+        const targetRoom = lastEvent.payload?.room;
+        setView("game");
+        setGameStarted(true);
+        if (isHost) {
+          const savedSnapshot = readHostSnapshot(targetRoom?.code);
+          if (savedSnapshot) {
+            applySnapshot(savedSnapshot);
+          } else {
+            initializeGame(targetRoom);
+          }
+        }
+        break;
+      }
+      case "game_snapshot":
+        if (!isHost) {
+          applySnapshot(lastEvent.payload?.snapshot);
+        }
+        break;
+      case "player_command":
+        executeCommand(lastEvent.payload, lastEvent.playerId);
+        break;
+      case "join_rejected":
+        setView("landing");
+        setGameStarted(false);
+        break;
+      default:
+        break;
+    }
+    // The event id guard prevents replay while these handlers read latest state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastEvent, isHost]);
+
+  useEffect(() => {
+    if (!gameStarted || !room?.players?.length) return;
+
+    setPlayers((currentPlayers) =>
+      currentPlayers.map((player) => {
+        const roomPlayer = room.players.find(
+          (candidate) => candidate.playerId === player.id,
+        );
+
+        return roomPlayer
+          ? { ...player, connected: roomPlayer.connected !== false }
+          : player;
+      }),
+    );
+  }, [gameStarted, room?.players]);
+
+  useEffect(() => {
+    if (!isHost || !gameStarted || !room?.code || !players.length) return;
+
+    sessionStorage.setItem(
+      `${HOST_SNAPSHOT_KEY_PREFIX}${room.code}`,
+      JSON.stringify(snapshot),
+    );
+    sendGameSnapshot(snapshot);
+  }, [gameStarted, isHost, players.length, room?.code, sendGameSnapshot, snapshot]);
+
+  const activeTile = activePlayer ? board[activePlayer.position] : null;
+  const isDiceDisabled =
+    !canAct || !!winner || isAction || isMoving || isRolling || !diceReady;
+  const selectionGuide =
+    pendingAction?.type === "worldTravel"
+      ? {
+          title: "세계여행",
+          description: "이동할 블록을 클릭하세요.",
+          count: worldTravelDestinations.length,
+        }
+      : pendingAction?.type === "olympic"
+        ? {
+            title: "올림픽",
+            description: "개최할 내 도시나 휴양지를 클릭하세요.",
+            count: getOwnedBuildableTiles(turn).length,
+          }
+        : null;
+
+  const handleCreateSubmit = (event) => {
+    event.preventDefault();
+    createRoom({
+      name: createForm.name.trim() || "방장",
+      maxPlayers: createForm.maxPlayers,
+    });
+  };
+
+  const handleJoinSubmit = (event) => {
+    event.preventDefault();
+    joinRoom({
+      name: joinForm.name.trim() || "플레이어",
+      roomCode: joinForm.roomCode.trim(),
+    });
+  };
+
+  const handleStartGame = () => {
+    if (!room) return;
+    startGame();
+  };
+
+  const handleResetSession = () => {
+    clearRoomSession();
+    setView("landing");
+    setGameStarted(false);
+    setPlayers([]);
+    setBoard(cloneBoard());
+  };
+
+  if (view !== "game" || !gameStarted || !players.length) {
+    return (
+      <SetupScreen
+        view={view}
+        setView={setView}
+        connectionStatus={connectionStatus}
+        room={room}
+        isHost={isHost}
+        localPlayerId={localPlayerId}
+        multiplayerError={multiplayerError}
+        createForm={createForm}
+        setCreateForm={setCreateForm}
+        joinForm={joinForm}
+        setJoinForm={setJoinForm}
+        onCreateSubmit={handleCreateSubmit}
+        onJoinSubmit={handleJoinSubmit}
+        onStartGame={handleStartGame}
+        onResetSession={handleResetSession}
+        isSyncing={view === "game" && gameStarted && !players.length}
+      />
+    );
+  }
 
   return (
     <Stack
@@ -764,12 +1045,12 @@ function App() {
         width: "100%",
         height: "var(--app-height)",
         minWidth: 0,
-        minHeight: 0,
-        maxHeight: "var(--app-height)",
+        minHeight: "var(--app-height)",
         overflow: "hidden",
+        WebkitOverflowScrolling: "auto",
         position: "relative",
         isolation: "isolate",
-        contain: "paint",
+        contain: "layout paint size",
         background: "transparent",
         fontFamily:
           "'Pretendard', 'Noto Sans KR', 'Malgun Gothic', Arial, sans-serif",
@@ -789,51 +1070,35 @@ function App() {
           zIndex: 7,
         }}
       >
-        <User
-          data={user2}
-          rank="2위"
-          sx={{
-            position: "absolute",
-            top: { xs: 8, sm: 10, md: 14, lg: 18 },
-            left: { xs: 8, sm: 10, md: 14, lg: 18 },
-          }}
-        />
+        {players.map((player, index) => (
+          <User
+            key={player.id}
+            data={player}
+            rank={player.id === localPlayerId ? "나" : `P${index + 1}`}
+            anchor={index % 2 === 0 ? "left" : "right"}
+            isActive={turn === player.id}
+            sx={getPlayerPanelSx(index, players.length)}
+          />
+        ))}
         <Stack
           sx={{
             position: "absolute",
             top: { xs: 8, sm: 10, md: 16, lg: 22 },
             left: "50%",
             transform: "translateX(-50%)",
-            px: { xs: 1.25, sm: 1.6, md: 2.2, lg: 3 },
-            py: { xs: 0.45, sm: 0.6, md: 0.85, lg: 1.1 },
-            minWidth: { xs: 104, sm: 122, md: 146, lg: 170 },
             alignItems: "center",
-            color: "#285077",
-            fontSize: { xs: "13px", sm: "15px", md: "18px", lg: "22px" },
-            fontWeight: 900,
-            letterSpacing: 0,
-            borderRadius: { xs: "10px", sm: "12px", md: "15px", lg: "18px" },
-            background:
-              "linear-gradient(180deg, rgba(255,255,255,0.78), rgba(218,246,255,0.46))",
-            border: "1px solid rgba(255,255,255,0.82)",
-            backdropFilter: "blur(16px) saturate(1.35)",
-            boxShadow:
-              "0 18px 32px rgba(82,145,196,0.22), inset 0 1px 0 rgba(255,255,255,0.92)",
-            textShadow: "0 1px 0 rgba(255,255,255,0.8)",
           }}
         >
-          {activePlayer.name} 차례
+          {selectionGuide && (
+            <ActionGuide
+              title={selectionGuide.title}
+              description={selectionGuide.description}
+              count={selectionGuide.count}
+              onSkip={() => requestCommand({ type: "end_turn" })}
+              disabled={!canAct}
+            />
+          )}
         </Stack>
-        <User
-          data={user1}
-          rank="1위"
-          anchor="right"
-          sx={{
-            position: "absolute",
-            right: { xs: 8, sm: 10, md: 14, lg: 18 },
-            bottom: { xs: 8, sm: 10, md: 14, lg: 18 },
-          }}
-        />
       </Stack>
 
       <Box
@@ -910,8 +1175,11 @@ function App() {
       <Box
         sx={{
           position: "absolute",
-          top: { xs: 66, sm: 78, md: 98, lg: 120 },
-          width: "100%",
+          left: "50%",
+          top: "50%",
+          width: "auto",
+          maxWidth: "94vw",
+          transform: "translate(-50%, -50%)",
           display: "flex",
           justifyContent: "center",
           pointerEvents: "none",
@@ -924,17 +1192,27 @@ function App() {
         {!isMoving && (
           <TileActionPanel
             player={activePlayer}
-            opponent={players[opponentId]}
             tile={activeTile}
             action={pendingAction}
             isAction={isAction}
-            onBuild={buildCity}
-            onPayToll={payToll}
-            onAcquire={acquireCity}
-            onEndTurn={endTurn}
+            onBuild={(tile, buildType) =>
+              requestCommand({
+                type: "build_city",
+                tileIdx: tile.idx,
+                buildType,
+              })
+            }
+            onPayToll={(tile) =>
+              requestCommand({ type: "pay_toll", tileIdx: tile.idx })
+            }
+            onAcquire={(tile) =>
+              requestCommand({ type: "acquire_city", tileIdx: tile.idx })
+            }
+            onEndTurn={() => requestCommand({ type: "end_turn" })}
             getToll={getToll}
             hasColorMonopoly={hasColorMonopoly}
             winner={winner}
+            canAct={canAct}
           />
         )}
       </Box>
@@ -947,7 +1225,7 @@ function App() {
           minHeight: 0,
           maxHeight: "100%",
           overflow: "hidden",
-          contain: "paint",
+          contain: "layout paint size",
           zIndex: 1,
         }}
       >
@@ -965,11 +1243,10 @@ function App() {
           }}
         />
         <Box
-          className="hb-board-stage"
           sx={{
             position: "absolute",
             left: "50%",
-            top: { xs: "56%", sm: "55%", md: "53.5%", lg: "52%" },
+            top: "var(--board-top)",
             width: mapWidth,
             height: mapHeight,
             transform:
@@ -998,24 +1275,6 @@ function App() {
           <Box
             sx={{
               position: "absolute",
-              left: -20,
-              right: -20,
-              bottom: -58,
-              height: 58,
-              borderRadius: "0 0 34px 34px",
-              background:
-                "linear-gradient(180deg, rgba(198,238,255,0.64), rgba(126,204,239,0.54) 58%, rgba(255,181,220,0.42))",
-              border: "1px solid rgba(255,255,255,0.76)",
-              borderTop: 0,
-              backdropFilter: "blur(16px) saturate(1.3)",
-              boxShadow:
-                "0 24px 36px rgba(82,145,196,0.24), inset 0 -16px 24px rgba(72,151,206,0.22)",
-              transform: "translateZ(-26px)",
-            }}
-          />
-          <Box
-            sx={{
-              position: "absolute",
               inset: 58,
               borderRadius: "28px",
               background:
@@ -1038,8 +1297,7 @@ function App() {
 
           <BuildMap
             board={board}
-            user1={user1}
-            user2={user2}
+            players={players}
             tokenLayer={tokenLayer}
             onBlockClick={handleBlockClick}
             getIsSelectable={(tile) =>
@@ -1055,11 +1313,10 @@ function App() {
           />
 
           <Box
-            className="hb-dice-panel"
             sx={{
               position: "absolute",
               left: "50%",
-              top: "55%",
+              top: "var(--dice-panel-top)",
               transform: "translate(-50%, -50%) translateZ(58px) rotate(45deg)",
               display: "grid",
               justifyItems: "center",
@@ -1083,31 +1340,9 @@ function App() {
               onClick={rollDice}
               disabled={isDiceDisabled}
               title={diceError ? "Dice fallback active" : "ROLL"}
-              sx={{
-                width: 118,
-                height: 118,
-                borderRadius: "50%",
-                color: "#ffffff",
-                fontSize: 26,
-                fontWeight: 900,
-                letterSpacing: 0,
-                background:
-                  "radial-gradient(circle at 34% 24%, rgba(255,255,255,0.82), rgba(255,117,189,0.76) 48%, rgba(124,207,255,0.76) 100%)",
-                border: "1px solid rgba(255,255,255,0.86)",
-                backdropFilter: "blur(14px) saturate(1.35)",
-                boxShadow:
-                  "0 22px 32px rgba(91,152,205,0.28), inset 0 8px 12px rgba(255,255,255,0.34)",
-                textShadow: "0 2px 2px rgba(68,123,176,0.38)",
-                zIndex: 2,
-                "&:hover": {
-                  background:
-                    "radial-gradient(circle at 34% 24%, rgba(255,255,255,0.9), rgba(255,131,197,0.82) 48%, rgba(141,220,255,0.82) 100%)",
-                  boxShadow:
-                    "0 20px 30px rgba(91,152,205,0.3), inset 0 8px 12px rgba(255,255,255,0.38)",
-                },
-              }}
+              sx={rollButtonSx}
             >
-              {isRolling ? "..." : "ROLL"}
+              {"ROLL"}
             </Button>
             <Box
               sx={{
@@ -1164,22 +1399,17 @@ function App() {
               onClick={rollDice}
               disabled={isDiceDisabled}
               sx={{
-                px: 3,
-                py: 1,
-                borderRadius: "14px",
-                fontWeight: 900,
-                background: "linear-gradient(180deg, #ff8f5b, #e94335)",
-                boxShadow: "0 7px 0 #9e1e22, 0 12px 20px rgba(131,36,25,0.3)",
-                "&:hover": {
-                  background: "linear-gradient(180deg, #ffa26f, #ef4b39)",
-                  boxShadow:
-                    "0 6px 0 #9e1e22, 0 10px 18px rgba(131,36,25,0.32)",
-                },
+                ...rollButtonSx,
+                width: 96,
+                height: 96,
+                minWidth: 96,
+                minHeight: 96,
+                fontSize: 17,
               }}
             >
               주사위 굴리기
             </Button>
-            {!!activePlayer.tollPasses && (
+            {!!activePlayer?.tollPasses && (
               <Typography variant="caption">
                 통행료 면제권 {activePlayer.tollPasses}장
               </Typography>
@@ -1190,124 +1420,159 @@ function App() {
 
       <Dialog
         open={pendingAction?.type === "goldenKey"}
-        onClose={resolveGoldenKeyMovement}
+        onClose={
+          canAct
+            ? () => requestCommand({ type: "resolve_golden_key" })
+            : undefined
+        }
+        TransitionProps={{
+          onExited: () => {
+            setDisplayGoldenKeyCard(null);
+          },
+        }}
         sx={dialogLayerSx}
       >
-        <DialogTitle>{pendingAction?.card?.title}</DialogTitle>
+        <DialogTitle>{displayGoldenKeyCard?.title}</DialogTitle>
         <DialogContent>
-          <Typography>{pendingAction?.card?.description}</Typography>
+          <Typography>{displayGoldenKeyCard?.description}</Typography>
         </DialogContent>
         <DialogActions>
-          <Button onClick={resolveGoldenKeyMovement} variant="contained">
-            확인
+          <Button
+            onClick={() => requestCommand({ type: "resolve_golden_key" })}
+            variant="contained"
+            disabled={!canAct}
+          >
+            {canAct ? "확인" : "대기 중"}
           </Button>
         </DialogActions>
       </Dialog>
 
       <Dialog
-        open={pendingAction?.type === "worldTravel"}
-        hideBackdrop
-        disableAutoFocus
-        disableEnforceFocus
-        sx={{
-          ...dialogLayerSx,
-          pointerEvents: "none",
-          "& .MuiDialog-paper": {
-            ...dialogLayerSx["& .MuiDialog-paper"],
-            pointerEvents: "auto",
+        open={pendingAction?.type === "worldTravel" && !!selectedDestination}
+        onClose={cancelWorldTravelSelection}
+        TransitionProps={{
+          onExited: () => {
+            setDisplayDestinationTile(null);
           },
         }}
+        sx={dialogLayerSx}
       >
-        <DialogTitle>세계여행</DialogTitle>
+        <DialogTitle>세계여행 목적지 확인</DialogTitle>
         <DialogContent sx={{ minWidth: 360, pt: 1 }}>
-          <SelectionGuide
-            title="이동할 블록을 보드에서 클릭하세요"
-            count={buildableTiles.length}
-          />
           <TileInfoCard
-            tile={selectedDestinationTile}
+            tile={displayDestinationTile}
             getToll={getToll}
             hasColorMonopoly={hasColorMonopoly}
             fallback="아직 목적지가 선택되지 않았습니다."
           />
         </DialogContent>
         <DialogActions>
-          <Button onClick={endTurn} color="inherit">
-            건너뛰기
+          <Button onClick={cancelWorldTravelSelection} color="inherit">
+            다시 선택
           </Button>
           <Button
             onClick={selectWorldTravelDestination}
             variant="contained"
-            disabled={!selectedDestination}
+            disabled={!canAct || !selectedDestination}
           >
-            이동
+            확인
           </Button>
         </DialogActions>
       </Dialog>
       <Dialog
-        open={pendingAction?.type === "olympic"}
-        hideBackdrop
-        disableAutoFocus
-        disableEnforceFocus
-        sx={{
-          ...dialogLayerSx,
-          pointerEvents: "none",
-          "& .MuiDialog-paper": {
-            ...dialogLayerSx["& .MuiDialog-paper"],
-            pointerEvents: "auto",
+        open={pendingAction?.type === "olympic" && !!selectedOlympicCity}
+        onClose={cancelOlympicSelection}
+        TransitionProps={{
+          onExited: () => {
+            setDisplayOlympicTile(null);
           },
         }}
+        sx={dialogLayerSx}
       >
-        <DialogTitle>올림픽 개최지 선택</DialogTitle>
+        <DialogTitle>올림픽 개최지 확인</DialogTitle>
         <DialogContent sx={{ minWidth: 360, pt: 1 }}>
-          <SelectionGuide
-            title="내가 보유한 블록을 보드에서 클릭하세요"
-            count={getOwnedBuildableTiles(turn).length}
-          />
           <TileInfoCard
-            tile={selectedOlympicTile}
+            tile={displayOlympicTile}
             getToll={getToll}
             hasColorMonopoly={hasColorMonopoly}
             fallback="아직 개최지가 선택되지 않았습니다."
           />
         </DialogContent>
         <DialogActions>
-          <Button onClick={endTurn} color="inherit">
-            건너뛰기
+          <Button onClick={cancelOlympicSelection} color="inherit">
+            다시 선택
           </Button>
           <Button
             onClick={selectOlympicCity}
             variant="contained"
-            disabled={!selectedOlympicCity}
+            disabled={!canAct || !selectedOlympicCity}
           >
-            개최
+            확인
           </Button>
         </DialogActions>
       </Dialog>
 
-      <Dialog open={!!winner} sx={dialogLayerSx}>
+      <Dialog
+        open={isInfoDialogOpen}
+        onClose={closeTileInfo}
+        TransitionProps={{
+          onExited: () => {
+            setSelectedInfoTileIdx(null);
+          },
+        }}
+        sx={dialogLayerSx}
+      >
+        <DialogTitle>지역 정보</DialogTitle>
+        <DialogContent sx={{ minWidth: 360, pt: 1 }}>
+          <TileInfoCard
+            tile={selectedInfoTile}
+            getToll={getToll}
+            hasColorMonopoly={hasColorMonopoly}
+            fallback="선택된 지역이 없습니다."
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={closeTileInfo} variant="contained">
+            닫기
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={!!winner}
+        TransitionProps={{
+          onExited: () => {
+            setDisplayWinner(null);
+          },
+        }}
+        sx={dialogLayerSx}
+      >
         <DialogTitle>
-          {winner?.victoryType === "bankruptcy" ? "게임 종료" : "휴양지 독점 승리"}
+          {displayWinner?.victoryType === "bankruptcy"
+            ? "게임 종료"
+            : "휴양지 독점 승리"}
         </DialogTitle>
         <DialogContent>
           <Stack gap={1.5}>
             <Typography variant="h6" fontWeight={950} color="#102f4e">
-              승리자: {winner?.name}
+              승리자: {displayWinner?.name}
             </Typography>
-            {winner?.victoryType === "bankruptcy" ? (
+            {displayWinner?.victoryType === "bankruptcy" ? (
               <Typography>
-                {winner?.loser?.name}님의 보유 금액이 0원보다 작아져 게임이 종료되었습니다.
+                {displayWinner?.loser?.name}님의 보유 금액이 0원보다 작아져
+                게임이 종료되었습니다.
               </Typography>
             ) : (
               <Typography>
-                {winner?.name}님이 모든 휴양지를 모아 게임에서 승리했습니다.
+                {displayWinner?.name}님이 모든 휴양지를 모아 게임에서
+                승리했습니다.
               </Typography>
             )}
           </Stack>
         </DialogContent>
         <DialogActions>
-          <Button variant="contained" onClick={restartGame}>
-            다시하기
+          <Button variant="contained" onClick={restartGame} disabled={!isHost}>
+            {isHost ? "다시하기" : "방장 대기"}
           </Button>
         </DialogActions>
       </Dialog>
@@ -1316,6 +1581,296 @@ function App() {
 }
 
 export default App;
+
+const getPlayerPanelSx = (index, count) => {
+  const inset = { xs: 8, sm: 10, md: 14, lg: 18 };
+  const positions =
+    count <= 2
+      ? [
+          { right: inset, bottom: inset },
+          { left: inset, top: inset },
+        ]
+      : [
+          { right: inset, bottom: inset },
+          { left: inset, top: inset },
+          { right: inset, top: { xs: 58, sm: 62, md: 70, lg: 78 } },
+          { left: inset, bottom: inset },
+        ];
+
+  return {
+    position: "absolute",
+    ...(positions[index] || positions[0]),
+  };
+};
+
+const setupCardSx = {
+  width: 520,
+  maxWidth: "calc(100vw - 32px)",
+  p: { xs: 2, sm: 3 },
+  gap: 2,
+  color: "#10395d",
+  borderRadius: "22px",
+  background:
+    "linear-gradient(180deg, rgba(255,255,255,0.96), rgba(227,249,255,0.9))",
+  border: "1px solid rgba(255,255,255,0.92)",
+  boxShadow:
+    "0 18px 40px rgba(64,128,178,0.24), inset 0 1px 0 rgba(255,255,255,0.95)",
+};
+
+const SetupScreen = ({
+  view,
+  setView,
+  connectionStatus,
+  room,
+  isHost,
+  localPlayerId,
+  multiplayerError,
+  createForm,
+  setCreateForm,
+  joinForm,
+  setJoinForm,
+  onCreateSubmit,
+  onJoinSubmit,
+  onStartGame,
+  onResetSession,
+  isSyncing,
+}) => {
+  const connectedSlots = room?.players?.filter((player) => player.connected) || [];
+  const isRoomReady =
+    !!room &&
+    room.players.length === room.maxPlayers &&
+    connectedSlots.length === room.maxPlayers;
+  const slots = Array.from({ length: room?.maxPlayers || 0 }, (_, index) =>
+    room?.players?.find((player) => player.slot === index),
+  );
+
+  return (
+    <Stack
+      className="game-stage"
+      alignItems="center"
+      justifyContent="center"
+      sx={{
+        width: "100%",
+        minHeight: "var(--app-height)",
+        px: 2,
+        background: "transparent",
+        fontFamily:
+          "'Pretendard', 'Noto Sans KR', 'Malgun Gothic', Arial, sans-serif",
+      }}
+    >
+      <Stack sx={setupCardSx}>
+        <Stack direction="row" justifyContent="space-between" gap={1}>
+          <Box>
+            <Typography variant="h4" fontWeight={950} color="#102f4e">
+              HB World
+            </Typography>
+            <Typography fontWeight={800} color="#54708b">
+              WebSocket 멀티플레이
+            </Typography>
+          </Box>
+          <Chip
+            label={
+              connectionStatus === "connected" ? "서버 연결" : "서버 대기"
+            }
+            color={connectionStatus === "connected" ? "success" : "warning"}
+            sx={{ fontWeight: 900 }}
+          />
+        </Stack>
+
+        {multiplayerError && <Alert severity="warning">{multiplayerError}</Alert>}
+
+        {isSyncing && (
+          <Alert severity="info">
+            방장 브라우저에서 게임 상태를 동기화하는 중입니다.
+          </Alert>
+        )}
+
+        {view === "landing" && !room && (
+          <Stack direction={{ xs: "column", sm: "row" }} gap={1.5}>
+            <Button
+              fullWidth
+              variant="contained"
+              size="large"
+              onClick={() => setView("create")}
+              disabled={connectionStatus !== "connected"}
+            >
+              방 만들기
+            </Button>
+            <Button
+              fullWidth
+              variant="outlined"
+              size="large"
+              onClick={() => setView("join")}
+              disabled={connectionStatus !== "connected"}
+            >
+              참여하기
+            </Button>
+          </Stack>
+        )}
+
+        {view === "create" && !room && (
+          <Stack component="form" gap={1.5} onSubmit={onCreateSubmit}>
+            <TextField
+              label="방장 이름"
+              value={createForm.name}
+              onChange={(event) =>
+                setCreateForm((current) => ({
+                  ...current,
+                  name: event.target.value,
+                }))
+              }
+              inputProps={{ maxLength: 12 }}
+              required
+            />
+            <TextField
+              select
+              label="플레이 인원"
+              value={createForm.maxPlayers}
+              onChange={(event) =>
+                setCreateForm((current) => ({
+                  ...current,
+                  maxPlayers: Number(event.target.value),
+                }))
+              }
+            >
+              {[2, 3, 4].map((count) => (
+                <MenuItem key={count} value={count}>
+                  {count}명
+                </MenuItem>
+              ))}
+            </TextField>
+            <Stack direction="row" gap={1}>
+              <Button color="inherit" onClick={() => setView("landing")}>
+                뒤로
+              </Button>
+              <Button type="submit" variant="contained" sx={{ flex: 1 }}>
+                방 만들기
+              </Button>
+            </Stack>
+          </Stack>
+        )}
+
+        {view === "join" && !room && (
+          <Stack component="form" gap={1.5} onSubmit={onJoinSubmit}>
+            <TextField
+              label="접속 코드"
+              value={joinForm.roomCode}
+              onChange={(event) =>
+                setJoinForm((current) => ({
+                  ...current,
+                  roomCode: event.target.value
+                    .toUpperCase()
+                    .replace(/[^A-Z0-9]/g, "")
+                    .slice(0, 6),
+                }))
+              }
+              inputProps={{ maxLength: 6 }}
+              required
+            />
+            <TextField
+              label="플레이어 이름"
+              value={joinForm.name}
+              onChange={(event) =>
+                setJoinForm((current) => ({
+                  ...current,
+                  name: event.target.value,
+                }))
+              }
+              inputProps={{ maxLength: 12 }}
+              required
+            />
+            <Stack direction="row" gap={1}>
+              <Button color="inherit" onClick={() => setView("landing")}>
+                뒤로
+              </Button>
+              <Button type="submit" variant="contained" sx={{ flex: 1 }}>
+                참여하기
+              </Button>
+            </Stack>
+          </Stack>
+        )}
+
+        {room && room.status !== "game" && (
+          <Stack gap={1.5}>
+            <Stack
+              direction={{ xs: "column", sm: "row" }}
+              justifyContent="space-between"
+              gap={1}
+            >
+              <Box>
+                <Typography fontSize={13} fontWeight={900} color="#54708b">
+                  접속 코드
+                </Typography>
+                <Typography variant="h3" fontWeight={950} letterSpacing={0}>
+                  {room.code}
+                </Typography>
+              </Box>
+              <Chip
+                label={`${room.players.length}/${room.maxPlayers}`}
+                color={isRoomReady ? "success" : "primary"}
+                sx={{ alignSelf: "center", fontWeight: 900 }}
+              />
+            </Stack>
+
+            <Stack gap={1}>
+              {slots.map((player, index) => (
+                <Stack
+                  key={`slot-${index}`}
+                  direction="row"
+                  justifyContent="space-between"
+                  alignItems="center"
+                  sx={{
+                    px: 1.5,
+                    py: 1,
+                    borderRadius: "12px",
+                    background: "rgba(255,255,255,0.68)",
+                    border: "1px solid rgba(84,112,139,0.14)",
+                  }}
+                >
+                  <Typography fontWeight={900}>
+                    {player?.name || `빈자리 ${index + 1}`}
+                    {player?.playerId === localPlayerId ? " (나)" : ""}
+                  </Typography>
+                  <Chip
+                    size="small"
+                    label={
+                      player
+                        ? player.connected
+                          ? player.isHost
+                            ? "방장"
+                            : "접속"
+                          : "연결 끊김"
+                        : "대기"
+                    }
+                    color={
+                      player?.connected
+                        ? player.isHost
+                          ? "secondary"
+                          : "success"
+                        : "default"
+                    }
+                  />
+                </Stack>
+              ))}
+            </Stack>
+
+            <Button
+              variant="contained"
+              size="large"
+              onClick={onStartGame}
+              disabled={!isHost || !isRoomReady}
+            >
+              {isHost ? "게임 시작" : "방장이 게임을 시작합니다"}
+            </Button>
+            <Button color="inherit" onClick={onResetSession}>
+              처음 화면으로
+            </Button>
+          </Stack>
+        )}
+      </Stack>
+    </Stack>
+  );
+};
 
 const dialogLayerSx = {
   zIndex: 2147483647,
@@ -1332,8 +1887,8 @@ const dialogLayerSx = {
 const actionPanelSx = {
   gap: 1,
   alignItems: "center",
-  width: 360,
-  maxWidth: 360,
+  width: 460,
+  maxWidth: "96vw",
   px: 2.5,
   py: 2,
   color: "#10395d",
@@ -1345,6 +1900,85 @@ const actionPanelSx = {
   boxShadow:
     "0 10px 0 rgba(91,154,196,0.68), 0 22px 34px rgba(14,59,98,0.28), inset 0 4px 0 rgba(255,255,255,0.9)",
   textAlign: "center",
+};
+
+const rollButtonSx = {
+  width: 118,
+  height: 118,
+  minWidth: 118,
+  minHeight: 118,
+  p: 0,
+  color: "#ffffff !important",
+  fontSize: 25,
+  lineHeight: 1,
+  fontWeight: 950,
+  letterSpacing: "0 !important",
+  borderRadius: "18px !important",
+  background:
+    "linear-gradient(145deg, #ebd1ff 0%, #d9a7c9 48%, #ffd2bd 100%) !important",
+  border: "1px solid rgba(255,255,255,0.78)",
+  backdropFilter: "blur(12px) saturate(1.45)",
+  boxShadow:
+    "0 8px 20px rgba(85,145,195,0.2), inset 0 1px 0 rgba(255,255,255,0.48) !important",
+  textShadow: "0 2px 3px rgba(41,86,134,0.38)",
+  overflow: "hidden",
+  transform: "translateY(0) scale(1)",
+  transformOrigin: "center",
+  transition:
+    "transform 110ms ease, filter 140ms ease, box-shadow 140ms ease, background 140ms ease",
+  zIndex: 2,
+  "&::before": {
+    content: '""',
+    position: "absolute",
+    inset: 6,
+    borderRadius: "14px",
+    border: "1px solid rgba(255,255,255,0.42)",
+    pointerEvents: "none",
+  },
+  "&::after": {
+    content: '""',
+    position: "absolute",
+    inset: -20,
+    background:
+      "radial-gradient(circle at 50% 42%, rgba(255,255,255,0.86), rgba(255,255,255,0.18) 28%, transparent 56%)",
+    opacity: 0,
+    transform: "scale(0.42)",
+    transition: "opacity 160ms ease, transform 180ms ease",
+    pointerEvents: "none",
+  },
+  "&:hover": {
+    background:
+      "linear-gradient(145deg, #f2dcff 0%, #e2b0d2 48%, #ffddcb 100%) !important",
+    filter: "brightness(1.08) saturate(1.08)",
+    boxShadow:
+      "0 8px 20px rgba(85,145,195,0.24), inset 0 1px 0 rgba(255,255,255,0.54) !important",
+  },
+  "&:active": {
+    transform: "translateY(5px) scale(0.965)",
+    filter: "brightness(1.14) saturate(1.18)",
+    background:
+      "linear-gradient(145deg, #e0c0ff 0%, #cf8fc0 46%, #ffc1a5 100%) !important",
+    boxShadow:
+      "0 2px 8px rgba(85,145,195,0.2), inset 0 5px 14px rgba(101,67,135,0.2), inset 0 -1px 0 rgba(255,255,255,0.58) !important",
+    textShadow: "0 1px 2px rgba(41,86,134,0.5)",
+  },
+  "&:active::before": {
+    inset: 9,
+    borderColor: "rgba(255,255,255,0.58)",
+    boxShadow: "inset 0 0 22px rgba(255,255,255,0.36)",
+  },
+  "&:active::after": {
+    opacity: 1,
+    transform: "scale(1)",
+  },
+  "&.Mui-disabled": {
+    color: "rgba(255,255,255,0.58) !important",
+    background:
+      "linear-gradient(145deg, rgba(235,209,255,0.58) 0%, rgba(217,167,201,0.54) 48%, rgba(255,210,189,0.56) 100%) !important",
+    boxShadow:
+      "0 5px 14px rgba(85,145,195,0.13), inset 0 1px 0 rgba(255,255,255,0.32) !important",
+    transform: "none",
+  },
 };
 
 const toolIconButtonSx = {
@@ -1366,27 +2000,70 @@ const toolIconButtonSx = {
   },
 };
 
-const SelectionGuide = ({ title, count }) => (
+const ActionGuide = ({ title, description, count, onSkip, disabled }) => (
   <Stack
     direction="row"
     alignItems="center"
-    justifyContent="space-between"
+    gap={0.8}
     sx={{
-      mb: 1.5,
-      p: 1.25,
+      width: 276,
+      maxWidth: "76vw",
+      px: 1.1,
+      py: 0.7,
+      color: "#123b5d",
       borderRadius: "14px",
       background:
-        "linear-gradient(135deg, rgba(232,248,255,0.94), rgba(226,249,242,0.92))",
-      border: "1px solid rgba(255,255,255,0.86)",
-      boxShadow: "inset 0 1px 0 rgba(255,255,255,0.95)",
+        "linear-gradient(180deg, rgba(255,255,255,0.9), rgba(226,249,242,0.78))",
+      border: "1px solid rgba(255,255,255,0.88)",
+      backdropFilter: "blur(14px) saturate(1.35)",
+      boxShadow:
+        "0 14px 22px rgba(64,128,178,0.22), inset 0 1px 0 rgba(255,255,255,0.9)",
+      zIndex: 3,
     }}
   >
-    <Typography fontWeight={900} color="#173653">
-      {title}
-    </Typography>
-    <Chip label={`${count}곳`} size="small" color="primary" />
+    <Box sx={{ minWidth: 0, flex: 1 }}>
+      <Typography fontSize={12} fontWeight={950} lineHeight={1.12}>
+        {title}
+      </Typography>
+      <Typography fontSize={11} fontWeight={800} lineHeight={1.18}>
+        {description}
+      </Typography>
+    </Box>
+    <Chip
+      label={`${count}곳`}
+      size="small"
+      color="primary"
+      sx={{
+        height: 20,
+        fontSize: 10,
+        fontWeight: 900,
+        "& .MuiChip-label": { px: 0.8 },
+      }}
+    />
+    <Button
+      size="small"
+      onClick={onSkip}
+      color="inherit"
+      disabled={disabled}
+      sx={{
+        minWidth: 36,
+        px: 0.75,
+        py: 0.2,
+        fontSize: 11,
+        fontWeight: 900,
+        borderRadius: "9px",
+      }}
+    >
+      패스
+    </Button>
   </Stack>
 );
+
+const getTileKindLabel = (tile) => {
+  if (tile?.kind === "resort") return "휴양지";
+  if (tile?.kind === "city") return "도시";
+  return "특수";
+};
 
 const TileInfoCard = ({ tile, getToll, hasColorMonopoly, fallback }) => {
   if (!tile) {
@@ -1435,7 +2112,7 @@ const TileInfoCard = ({ tile, getToll, hasColorMonopoly, fallback }) => {
           </Typography>
         </Box>
         <Chip
-          label={tile.kind === "resort" ? "휴양지" : "도시"}
+          label={getTileKindLabel(tile)}
           sx={{
             fontWeight: 900,
             color: "#ffffff",
@@ -1485,9 +2162,7 @@ const TileInfoCard = ({ tile, getToll, hasColorMonopoly, fallback }) => {
         <Typography fontWeight={900}>
           소유자: {tile.owner?.name || "없음"}
         </Typography>
-        <Typography>
-          현재 건물: {ownerCost?.label || "없음"}
-        </Typography>
+        <Typography>현재 건물: {ownerCost?.label || "없음"}</Typography>
         <Typography>
           현재 통행료: {tile.owner ? NumberToMoney(toll) : "없음"}
         </Typography>
@@ -1515,6 +2190,7 @@ const TileActionPanel = ({
   getToll,
   hasColorMonopoly,
   winner,
+  canAct,
 }) => {
   const [costOption, setCostOption] = useState("");
 
@@ -1522,15 +2198,15 @@ const TileActionPanel = ({
     setCostOption("");
   }, [tile?.idx, action?.type]);
 
-  if (winner || !isAction || !action) return null;
+  if (winner || !isAction || !action || !player) return null;
 
   if (action.type === "message") {
     return (
       <Stack sx={actionPanelSx}>
         <Typography variant="h6">{action.title}</Typography>
         <Typography>{action.description}</Typography>
-        <Button variant="contained" onClick={onEndTurn}>
-          턴 종료
+        <Button variant="contained" onClick={onEndTurn} disabled={!canAct}>
+          {canAct ? "턴 종료" : "대기 중"}
         </Button>
       </Stack>
     );
@@ -1572,7 +2248,7 @@ const TileActionPanel = ({
           <Typography>{`통행료: ${NumberToMoney(getToll(tile))}`}</Typography>
           {canAcquire ? (
             <Typography>{`인수 비용: ${NumberToMoney(
-              getToll(tile) + ownerCost.build * 2
+              getToll(tile) + ownerCost.build * 2,
             )}`}</Typography>
           ) : (
             <Typography>휴양지는 인수할 수 없습니다.</Typography>
@@ -1582,11 +2258,16 @@ const TileActionPanel = ({
               variant="contained"
               color="inherit"
               onClick={() => onPayToll(tile)}
+              disabled={!canAct}
             >
               통행료 지불
             </Button>
             {canAcquire && (
-              <Button variant="contained" onClick={() => onAcquire(tile)}>
+              <Button
+                variant="contained"
+                onClick={() => onAcquire(tile)}
+                disabled={!canAct}
+              >
                 인수
               </Button>
             )}
@@ -1600,41 +2281,37 @@ const TileActionPanel = ({
             </Typography>
           )}
           <Typography>{`가격: ${NumberToMoney(
-            selectedCost?.build || 0
+            selectedCost?.build || 0,
           )}`}</Typography>
           <Typography>{`통행료: ${NumberToMoney(
-            selectedCost?.toll || 0
+            selectedCost?.toll || 0,
           )}`}</Typography>
-          {!tile.owner && tile.kind === "city" && (
-            <Typography variant="caption">
-              랜드마크는 내 건물이 있는 도시에서만 지을 수 있습니다.
-            </Typography>
-          )}
-          {!tile.owner && isResort && (
-            <Typography variant="caption">
-              모든 휴양지를 모으면 즉시 승리합니다.
-            </Typography>
-          )}
           <ToggleButtonGroup
             color="primary"
             value={costOption}
             exclusive
             sx={{
-              flexWrap: "wrap",
+              flexWrap: "nowrap",
               justifyContent: "center",
-              gap: 0.75,
+              gap: 0.5,
+              maxWidth: "100%",
               overflow: "visible",
+              mb: 1,
               "& .MuiToggleButtonGroup-grouped": {
                 margin: "0 !important",
                 borderLeft: "1px solid rgba(74,123,165,0.2) !important",
               },
               "& .MuiToggleButton-root": {
-                minWidth: 70,
-                minHeight: 42,
+                maxHeight: 40,
+                flex: "0 0 20%",
+                minWidth: 72,
+                minHeight: 36,
+                px: 1,
                 color: "#173653",
                 border: "1px solid rgba(74,123,165,0.2) !important",
                 borderRadius: "14px !important",
                 fontWeight: 950,
+                whiteSpace: "nowrap",
                 background:
                   "linear-gradient(180deg, rgba(255,255,255,0.98), rgba(235,247,252,0.94))",
                 boxShadow:
@@ -1647,11 +2324,12 @@ const TileActionPanel = ({
                     "linear-gradient(180deg, #ffffff, rgba(226,244,252,0.98))",
                 },
                 "&.Mui-selected": {
-                  color: "#08354b",
-                  borderColor: "#2ba9bd !important",
-                  background: "linear-gradient(180deg, #d8fbff, #6dd7ea)",
+                  color: "#31445f",
+                  borderColor: "#c8d9f0 !important",
+                  background:
+                    "linear-gradient(135deg, #e6f8ff 0%, #e4f2ff 36%, #f7ecff 66%, #ffdff0 100%)",
                   boxShadow:
-                    "0 6px 0 #187f98, inset 0 1px 0 rgba(255,255,255,0.78)",
+                    "0 6px 0 rgba(139,152,202,0.58), inset 0 1px 0 rgba(255,255,255,0.9)",
                 },
                 "&.Mui-disabled": {
                   color: "rgba(23,54,83,0.34)",
@@ -1668,10 +2346,11 @@ const TileActionPanel = ({
             {Object.entries(tile.costs).map(([key, cost]) => {
               const optionIndex = BUILD_ORDER.indexOf(key);
               const disabled =
-                !isResort &&
-                (isOpponentCity ||
+                !canAct ||
+                (!isResort &&
+                  (isOpponentCity ||
                   (!tile.owner && key === "landmark") ||
-                  (isOwnCity && optionIndex <= currentBuildIndex));
+                    (isOwnCity && optionIndex <= currentBuildIndex)));
 
               return (
                 <ToggleButton
@@ -1685,7 +2364,12 @@ const TileActionPanel = ({
             })}
           </ToggleButtonGroup>
           <Stack direction="row" gap={1}>
-            <Button variant="contained" color="inherit" onClick={onEndTurn}>
+            <Button
+              variant="contained"
+              color="inherit"
+              onClick={onEndTurn}
+              disabled={!canAct}
+            >
               턴 종료
             </Button>
             {(!tile.owner || isOwnCity) && (
@@ -1693,7 +2377,9 @@ const TileActionPanel = ({
                 variant="contained"
                 onClick={() => onBuild(tile, costOption)}
                 disabled={
-                  !isSelectedBuildAllowed || selectedCost?.build > player.money
+                  !canAct ||
+                  !isSelectedBuildAllowed ||
+                  selectedCost?.build > player.money
                 }
               >
                 {isOwnCity ? "업그레이드" : "구매"}
@@ -1708,59 +2394,53 @@ const TileActionPanel = ({
 
 const BuildMap = ({
   board,
-  user1,
-  user2,
+  players = [],
   tokenLayer,
   onBlockClick,
   getIsSelectable,
   selectedTileIdx,
 }) =>
   board.map((item, index) => {
-    let block = {
-      width: blockWidth,
-      height: blockHeight,
-    };
     const sideIndex = parseInt(index / 8, 10);
     const side = ["bottom", "left", "top", "right"][sideIndex] || "bottom";
-
-    const position = {
-      top: mapHeight - blockHeight,
-      left: mapWidth - blockWidth,
-    };
-
     const num = index % 8;
-    const num2 = index / 8;
-    const gap = blockHeight - blockWidth;
+    const isCorner = num === 0;
+    const isSideLine = side === "left" || side === "right";
+    const block = isCorner
+      ? { width: cornerBlockSize, height: cornerBlockSize }
+      : isSideLine
+        ? { width: blockHeight, height: blockWidth }
+        : { width: blockWidth, height: blockHeight };
+    const position = { top: 0, left: 0 };
 
     switch (sideIndex) {
       case 0:
-        position.top = mapHeight - blockHeight + gap;
-        position.left = mapWidth + 2 * gap - (num + 1) * blockWidth;
+        position.top = mapHeight - block.height;
+        position.left = isCorner
+          ? mapWidth - cornerBlockSize
+          : mapWidth - cornerBlockSize - num * blockWidth;
         break;
       case 1:
-        position.top = mapHeight - (num + 1) * blockHeight + gap;
-        position.left = Number.isInteger(num2) ? 0 : 2 * gap;
+        position.top = isCorner
+          ? mapHeight - cornerBlockSize
+          : mapHeight - cornerBlockSize - num * blockWidth;
+        position.left = 0;
         break;
       case 2:
-        position.top = Number.isInteger(num2) ? 0 : gap;
-        position.left = Number.isInteger(num2)
-          ? num * blockWidth
-          : num * blockWidth + 2 * gap;
+        position.top = 0;
+        position.left = isCorner ? 0 : cornerBlockSize + (num - 1) * blockWidth;
         break;
       case 3:
-        position.top = Number.isInteger(num2)
-          ? num * blockHeight
-          : num * blockHeight + gap;
-        position.left = mapWidth + 2 * gap - blockWidth;
+        position.top = isCorner ? 0 : cornerBlockSize + (num - 1) * blockWidth;
+        position.left = isCorner
+          ? mapWidth - cornerBlockSize
+          : mapWidth - blockHeight;
         break;
       default:
         break;
     }
 
-    if (Number.isInteger(num2)) {
-      const size = block.height + gap;
-      block = { width: size, height: size };
-    }
+    const tilePlayers = players.filter((player) => player.position === index);
 
     return (
       <Block
@@ -1769,8 +2449,7 @@ const BuildMap = ({
         position={position}
         block={block}
         side={side}
-        user1={user1.position === index ? user1 : null}
-        user2={user2.position === index ? user2 : null}
+        players={tilePlayers}
         tokenLayer={tokenLayer}
         onClick={onBlockClick ? () => onBlockClick(item) : undefined}
         isSelectable={getIsSelectable?.(item)}
@@ -1778,4 +2457,3 @@ const BuildMap = ({
       />
     );
   });
-

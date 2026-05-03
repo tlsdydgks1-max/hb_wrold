@@ -1,5 +1,7 @@
 :root {
   --board-scale: 0.96;
+  --board-top: 44%;
+  --dice-panel-top: 51%;
   --app-height: 100vh;
   --app-background: linear-gradient(
     135deg,
@@ -10,6 +12,16 @@
   );
   font-synthesis: none;
   text-rendering: optimizeLegibility;
+}
+
+@supports (height: 100svh) {
+  :root {
+    --app-height: 100svh;
+  }
+}
+
+html:fullscreen {
+  --app-height: 100vh;
 }
 
 * {
@@ -65,18 +77,62 @@ body {
   z-index: 1;
 }
 
-html.hb-booting .game-stage *,
-html.hb-viewport-changing .game-stage,
-html.hb-viewport-changing .game-stage * {
-  transition: none !important;
-  animation: none !important;
+@media (max-width: 980px), (hover: hover) and (max-height: 920px) {
+  :root {
+    --board-scale: 0.88;
+  }
 }
 
-html.hb-viewport-changing .hb-board-stage,
-html.hb-viewport-changing .hb-dice-panel,
-html.hb-viewport-changing .hb-dice-layer {
-  filter: none !important;
-  will-change: auto !important;
+@media (max-width: 880px), (hover: hover) and (max-height: 830px) {
+  :root {
+    --board-scale: 0.8;
+  }
+}
+
+@media (max-width: 780px), (hover: hover) and (max-height: 740px) {
+  :root {
+    --board-scale: 0.72;
+  }
+}
+
+@media (max-width: 660px), (hover: hover) and (max-height: 650px) {
+  :root {
+    --board-scale: 0.64;
+  }
+}
+
+@media (max-width: 560px), (hover: hover) and (max-height: 560px) {
+  :root {
+    --board-scale: 0.56;
+  }
+}
+
+@media (max-width: 460px) {
+  :root {
+    --board-scale: 0.5;
+  }
+}
+
+@media (max-width: 390px) {
+  :root {
+    --board-scale: 0.45;
+  }
+}
+
+@media (orientation: landscape) and (hover: none) and (pointer: coarse) {
+  :root {
+    --board-scale: 0.52;
+    --board-top: 29%;
+    --dice-panel-top: 51%;
+  }
+}
+
+@media (orientation: landscape) and (hover: none) and (pointer: coarse) and (max-width: 760px) {
+  :root {
+    --board-scale: 0.46;
+    --board-top: 26%;
+    --dice-panel-top: 51%;
+  }
 }
 
 @media (hover: none) and (pointer: coarse) {
@@ -87,17 +143,8 @@ html.hb-viewport-changing .hb-dice-layer {
     -webkit-backdrop-filter: none !important;
   }
 
-  .hb-board-stage,
-  .hb-board-stage *,
-  .hb-dice-panel,
-  .hb-dice-layer,
-  .hb-dice-layer canvas {
-    filter: none !important;
-  }
-
-  .hb-board-stage,
-  .hb-dice-panel,
-  .hb-dice-layer {
-    will-change: auto !important;
+  .hb-tile-label {
+    backdrop-filter: blur(12px) saturate(1.28) !important;
+    -webkit-backdrop-filter: blur(12px) saturate(1.28) !important;
   }
 }

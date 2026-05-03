@@ -8,49 +8,6 @@
       content="width=device-width, initial-scale=1.0, viewport-fit=cover"
     />
     <meta name="mobile-web-app-capable" content="yes" />
-    <script>
-      (function () {
-        var root = document.documentElement;
-        var width = window.innerWidth || root.clientWidth || 0;
-        var height = window.innerHeight || root.clientHeight || 0;
-        var isTouch =
-          window.matchMedia &&
-          window.matchMedia("(hover: none) and (pointer: coarse)").matches;
-        var scale = 0.96;
-
-        if (isTouch && width > height) {
-          scale = width <= 760 ? 0.46 : 0.52;
-        } else if (width <= 390) {
-          scale = 0.45;
-        } else if (width <= 460) {
-          scale = 0.5;
-        } else if (width <= 560) {
-          scale = 0.56;
-        } else if (width <= 660) {
-          scale = 0.64;
-        } else if (width <= 780) {
-          scale = 0.72;
-        } else if (width <= 880) {
-          scale = 0.8;
-        } else if (width <= 980) {
-          scale = 0.88;
-        } else if (!isTouch && height <= 560) {
-          scale = 0.56;
-        } else if (!isTouch && height <= 650) {
-          scale = 0.64;
-        } else if (!isTouch && height <= 740) {
-          scale = 0.72;
-        } else if (!isTouch && height <= 830) {
-          scale = 0.8;
-        } else if (!isTouch && height <= 920) {
-          scale = 0.88;
-        }
-
-        root.style.setProperty("--app-height", height + "px");
-        root.style.setProperty("--board-scale", String(scale));
-        root.classList.add("hb-booting");
-      })();
-    </script>
     <link rel="manifest" href="/manifest.json" />
     <title>하니♥비니 월드</title>
   </head>

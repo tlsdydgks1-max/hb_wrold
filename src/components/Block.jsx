@@ -124,13 +124,17 @@ const getTileSurface = (data, tileColor) => {
       };
     case "worldTravel":
       return {
-        accent: "#28a7e8",
-        surface: "#e7f8ff",
+        accent: "#5aaee0",
+        surface: "#e4f5ff",
+        specialSurface:
+          "linear-gradient(145deg, #c8efff 0%, #8ec9ef 52%, #d9ecff 100%)",
       };
     case "olympic":
       return {
-        accent: "#f28421",
-        surface: "#fff0d8",
+        accent: "#d48f50",
+        surface: "#fff0df",
+        specialSurface:
+          "linear-gradient(145deg, #ffe6aa 0%, #eeb475 48%, #bfd9ff 100%)",
       };
     case "tax":
       return {
@@ -139,8 +143,10 @@ const getTileSurface = (data, tileColor) => {
       };
     case "island":
       return {
-        accent: "#2fab5f",
-        surface: "#efffec",
+        accent: "#63b783",
+        surface: "#eaf8ed",
+        specialSurface:
+          "linear-gradient(145deg, #d6efc9 0%, #91d3ad 52%, #c9e9ff 100%)",
       };
     case "bonus":
       return {
@@ -149,8 +155,10 @@ const getTileSurface = (data, tileColor) => {
       };
     case "start":
       return {
-        accent: "#1fad5e",
-        surface: "#f2fff6",
+        accent: "#b77ccf",
+        surface: "#f8eaff",
+        specialSurface:
+          "linear-gradient(145deg, #ebd1ff 0%, #d9a7c9 48%, #ffd2bd 100%)",
       };
     default:
       return {
@@ -179,11 +187,11 @@ const sideConfig = {
   },
   top: {
     rotation: 0,
-    accent: { bottom: 0, left: 0, right: 0 },
+    accent: { top: 0, left: 0, right: 0 },
   },
   right: {
     rotation: 90,
-    accent: { top: 0, left: 0, bottom: 0 },
+    accent: { top: 0, right: 0, bottom: 0 },
   },
 };
 
@@ -194,6 +202,7 @@ const Block = ({
   side = "bottom",
   user1,
   user2,
+  players = null,
   tokenLayer,
   onClick,
   isSelectable = false,
@@ -222,6 +231,30 @@ const Block = ({
   const ownerDisplayColor =
     ownerColor?.split(".").reduce((value, key) => value?.[key], theme.palette) ||
     ownerColor;
+  const tileDropShadow =
+    side === "top"
+      ? "0 -8px 20px rgba(85,145,195,0.18)"
+      : side === "right"
+        ? "8px 0 20px rgba(85,145,195,0.18)"
+        : side === "left"
+          ? "-8px 0 20px rgba(85,145,195,0.18)"
+          : "0 8px 20px rgba(85,145,195,0.18)";
+  const ownedTileDropShadow =
+    side === "top"
+      ? "0 -10px 24px rgba(26,70,120,0.24)"
+      : side === "right"
+        ? "10px 0 24px rgba(26,70,120,0.24)"
+        : side === "left"
+          ? "-10px 0 24px rgba(26,70,120,0.24)"
+          : "0 10px 24px rgba(26,70,120,0.24)";
+  const cornerDropShadow =
+    side === "top"
+      ? "0 -8px 20px rgba(85,145,195,0.2)"
+      : side === "right"
+        ? "8px 0 20px rgba(85,145,195,0.2)"
+        : side === "left"
+          ? "-8px 0 20px rgba(85,145,195,0.2)"
+          : "0 8px 20px rgba(85,145,195,0.2)";
   const ownerMarkerSize = isCorner ? 42 : 36;
   const ownerMarkerInset = tileGap - ownerMarkerSize / 2;
   const ownerMarkerPosition =
@@ -248,10 +281,12 @@ const Block = ({
               top: "50%",
               transform: "translateY(-50%)",
           };
+  const tilePlayers =
+    players || [user1, user2].filter((player) => Boolean(player));
 
   useLayoutEffect(() => {
     const node = blockRef.current;
-    if (!node || !tokenLayer || (!user1 && !user2)) {
+    if (!node || !tokenLayer || !tilePlayers.length) {
       setScreenRect(null);
       return undefined;
     }
@@ -299,14 +334,19 @@ const Block = ({
       observer.disconnect();
     };
   }, [
-    user1,
-    user2,
+    tilePlayers,
     tokenLayer,
     block.width,
     block.height,
     position.left,
     position.top,
   ]);
+
+  const getTokenSlot = (index, count) => {
+    if (count <= 1) return 0;
+
+    return index - (count - 1) / 2;
+  };
 
   const renderPlayerToken = (player, label, slot = 0) => {
     if (!screenRect || !tokenLayer) return null;
@@ -357,7 +397,7 @@ const Block = ({
           display: "flex",
           overflow: "hidden",
           background: isSpecialCorner
-            ? tileSurface.accent
+            ? tileSurface.specialSurface || tileSurface.accent
             : `radial-gradient(circle at 28% 18%, rgba(255,255,255,0.95), transparent 28%), linear-gradient(145deg, ${tileSurface.accent}70, rgba(255,255,255,0.48) 48%, ${tileSurface.accent}38), ${tileSurface.surface}`,
           backdropFilter: "blur(12px) saturate(1.45)",
           justifyContent: "center",
@@ -372,10 +412,10 @@ const Block = ({
             ? `4px solid ${ownerDisplayColor}`
             : "1px solid rgba(255,255,255,0.78)",
           boxShadow: isSpecialCorner
-            ? "0 8px 20px rgba(85,145,195,0.2), inset 0 1px 0 rgba(255,255,255,0.48)"
+            ? `${cornerDropShadow}, inset 0 1px 0 rgba(255,255,255,0.48)`
             : ownerDisplayColor
-              ? `0 10px 24px rgba(26,70,120,0.24), 0 0 0 3px rgba(255,255,255,0.92), inset 0 1px 0 rgba(255,255,255,0.95), inset 0 0 0 7px ${ownerDisplayColor}33`
-              : `0 8px 20px rgba(85,145,195,0.18), inset 0 1px 0 rgba(255,255,255,0.95), inset 0 0 0 2px rgba(255,255,255,0.42), inset 0 0 0 6px ${tileSurface.accent}33`,
+              ? `${ownedTileDropShadow}, 0 0 0 3px rgba(255,255,255,0.92), inset 0 1px 0 rgba(255,255,255,0.95), inset 0 0 0 7px ${ownerDisplayColor}33`
+              : `${tileDropShadow}, inset 0 1px 0 rgba(255,255,255,0.95), inset 0 0 0 2px rgba(255,255,255,0.42), inset 0 0 0 6px ${tileSurface.accent}33`,
           outline: isSelected
             ? "5px solid rgba(255,201,52,0.95)"
             : isSelectable
@@ -424,6 +464,7 @@ const Block = ({
           }}
         />
         <Box
+          className="hb-tile-label"
           sx={{
             display: "grid",
             gap: 0.25,
@@ -443,16 +484,19 @@ const Block = ({
             borderRadius: "999px",
             background: isSpecialCorner
               ? "transparent"
-              : "linear-gradient(180deg, rgba(255,255,255,0.92), rgba(255,255,255,0.7))",
+              : "linear-gradient(180deg, rgba(255,255,255,0.34), rgba(255,255,255,0.2))",
             backdropFilter: isSpecialCorner
               ? "none"
-              : "blur(10px) saturate(1.25)",
+              : "blur(10px) saturate(1.12)",
+            WebkitBackdropFilter: isSpecialCorner
+              ? "none"
+              : "blur(10px) saturate(1.12)",
             border: isSpecialCorner
               ? "0"
-              : "1px solid rgba(255,255,255,0.82)",
+              : "1px solid rgba(255,255,255,0.32)",
             boxShadow: isSpecialCorner
               ? "none"
-              : `0 5px 14px rgba(61,128,185,0.16), inset 0 1px 0 rgba(255,255,255,0.95), inset 0 -1px 0 ${tileSurface.accent}55`,
+              : `inset 0 1px 0 rgba(255,255,255,0.34), inset 0 -1px 0 ${tileSurface.accent}18`,
             "& svg": {
               color: isSpecialCorner ? "#ffffff" : tileSurface.accent,
               fontSize: isCorner ? 24 : 18,
@@ -525,9 +569,13 @@ const Block = ({
         </Box>
       )}
       </Box>
-      {user1 &&
-        renderPlayerToken(user1, "H", user1 && user2 ? -1 : 0)}
-      {user2 && renderPlayerToken(user2, "B", user1 && user2 ? 1 : 0)}
+      {tilePlayers.map((player, index) =>
+        renderPlayerToken(
+          player,
+          player.tokenLabel || String(index + 1),
+          getTokenSlot(index, tilePlayers.length),
+        ),
+      )}
     </>
   );
 };

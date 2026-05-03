@@ -13,7 +13,6 @@ import { Box } from "@mui/material";
 const DICE_ASSET_PATH = "/assets/dice-box/";
 const DICE_THEME = "hb-marble";
 const DICE_THEME_COLOR = "#dffaff";
-const TOUCH_VIEWPORT_QUERY = "(hover: none) and (pointer: coarse)";
 
 const getFallbackRoll = () => [
   Math.floor(Math.random() * 6) + 1,
@@ -43,13 +42,11 @@ const DiceRoller = forwardRef(function DiceRoller(
 
   useEffect(() => {
     let isMounted = true;
-    const isTouchViewport =
-      window.matchMedia?.(TOUCH_VIEWPORT_QUERY).matches ?? false;
     const diceBox = new DiceBox(`#${containerId}`, {
       assetPath: DICE_ASSET_PATH,
       theme: DICE_THEME,
       themeColor: DICE_THEME_COLOR,
-      offscreen: !isTouchViewport,
+      offscreen: true,
       scale: 10.4,
       gravity: 3.15,
       mass: 3.2,
@@ -102,7 +99,6 @@ const DiceRoller = forwardRef(function DiceRoller(
 
   return (
     <Box
-      className="hb-dice-layer"
       sx={{
         position: "absolute",
         left: "50%",
