@@ -2,13 +2,14 @@ import { WebSocket, WebSocketServer } from "ws";
 
 const PORT = Number(process.env.HB_WS_PORT || 8787);
 const ROOM_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const ROOM_CODE_LENGTH = 4;
 
 const rooms = new Map();
 
 export const createRoomCode = () => {
   let code = "";
 
-  for (let index = 0; index < 6; index += 1) {
+  for (let index = 0; index < ROOM_CODE_LENGTH; index += 1) {
     code += ROOM_CODE_ALPHABET[
       Math.floor(Math.random() * ROOM_CODE_ALPHABET.length)
     ];

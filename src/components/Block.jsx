@@ -1,20 +1,19 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { memo, useCallback, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
-import { Avatar, Box, Chip } from "@mui/material";
+import { Avatar, Box } from "@mui/material";
 import { useTheme } from "@mui/material/styles";
 
 import AccountBalanceIcon from "@mui/icons-material/AccountBalance";
 import ApartmentIcon from "@mui/icons-material/Apartment";
 import BeachAccessIcon from "@mui/icons-material/BeachAccess";
-import CardGiftcardIcon from "@mui/icons-material/CardGiftcard";
 import EmojiEventsIcon from "@mui/icons-material/EmojiEvents";
 import FlightTakeoffIcon from "@mui/icons-material/FlightTakeoff";
 import FlagIcon from "@mui/icons-material/Flag";
 import HomeIcon from "@mui/icons-material/Home";
 import HotelIcon from "@mui/icons-material/Hotel";
 import LandscapeIcon from "@mui/icons-material/Landscape";
-import PaidIcon from "@mui/icons-material/Paid";
+import VpnKeyIcon from "@mui/icons-material/VpnKey";
 
 const OwnerIcon = ({ type }) => {
   switch (type) {
@@ -38,13 +37,13 @@ const OwnerIcon = ({ type }) => {
 const TileIcon = ({ kind }) => {
   switch (kind) {
     case "goldenKey":
-      return <CardGiftcardIcon fontSize="small" />;
+      return <VpnKeyIcon fontSize="small" />;
     case "worldTravel":
       return <FlightTakeoffIcon fontSize="small" />;
     case "olympic":
       return <EmojiEventsIcon fontSize="small" />;
     case "tax":
-      return <PaidIcon fontSize="small" />;
+      return <AccountBalanceIcon fontSize="small" />;
     case "island":
       return <LandscapeIcon fontSize="small" />;
     default:
@@ -52,11 +51,12 @@ const TileIcon = ({ kind }) => {
   }
 };
 
-const PlayerToken = ({ player, label, sx }) => {
+const PlayerToken = memo(function PlayerToken({ player, label, sx }) {
   const theme = useTheme();
   const tokenColor =
-    player.color?.split(".").reduce((value, key) => value?.[key], theme.palette) ||
-    player.color;
+    player.color
+      ?.split(".")
+      .reduce((value, key) => value?.[key], theme.palette) || player.color;
 
   return (
     <Box
@@ -113,14 +113,16 @@ const PlayerToken = ({ player, label, sx }) => {
       </Avatar>
     </Box>
   );
-};
+});
 
 const getTileSurface = (data, tileColor) => {
   switch (data?.kind) {
     case "goldenKey":
       return {
-        accent: "#f3bd2c",
+        accent: "#d99a16",
         surface: "#fff6d8",
+        specialSurface:
+          "linear-gradient(145deg, #ffe6a3 0%, #f0b536 52%, #d58c16 100%)",
       };
     case "worldTravel":
       return {
@@ -138,8 +140,10 @@ const getTileSurface = (data, tileColor) => {
       };
     case "tax":
       return {
-        accent: "#e84a3a",
+        accent: "#c63d32",
         surface: "#fff0ec",
+        specialSurface:
+          "linear-gradient(145deg, #ffb49f 0%, #e85a47 50%, #b9342e 100%)",
       };
     case "island":
       return {
@@ -204,19 +208,26 @@ const Block = ({
   user2,
   players = null,
   tokenLayer,
+  tollBonuses = [],
   onClick,
   isSelectable = false,
   isSelected = false,
+  isRollPreview = false,
 }) => {
   const theme = useTheme();
   const blockRef = useRef(null);
   const [screenRect, setScreenRect] = useState(null);
   const isCorner = block.width === block.height;
-  const isSpecialCorner = ["start", "island", "olympic", "worldTravel"].includes(
-    data?.kind
-  );
+  const isSpecialCorner = [
+    "start",
+    "island",
+    "olympic",
+    "worldTravel",
+  ].includes(data?.kind);
   const tileColor = data?.color || "#6f7782";
   const isProperty = data?.kind === "city" || data?.kind === "resort";
+  const isSimpleEventTile = data?.kind === "goldenKey" || data?.kind === "tax";
+  const usesSpecialSurface = isSpecialCorner || isSimpleEventTile;
   const tileSurface = getTileSurface(data, tileColor);
   const layout = sideConfig[side] || sideConfig.bottom;
   const isVerticalSide = side === "left" || side === "right";
@@ -226,11 +237,30 @@ const Block = ({
   const labelWidth = isVerticalSide
     ? block.height - tileGap * 2 - 18
     : block.width - tileGap * 2 - 12;
+  const hasTollBonuses =
+    isProperty && !isSpecialCorner && tollBonuses.length > 0;
+  const tollBonusMultiplierValue = tollBonuses.reduce(
+    (total, bonus) => total * (bonus.multiplier || 2),
+    1,
+  );
+  const tollBonusMultiplier = `${tollBonusMultiplierValue}배`;
+  const tollBonusCaption = tollBonuses
+    .map(
+      (bonus) =>
+        bonus.label ||
+        (bonus.key === "olympic"
+          ? "올림픽 2배"
+          : bonus.key === "monopoly"
+            ? "독점 2배"
+            : "통행료 보너스"),
+    )
+    .join("+");
   const tileName = formatTileName(data?.name);
   const ownerColor = data?.owner?.color;
   const ownerDisplayColor =
-    ownerColor?.split(".").reduce((value, key) => value?.[key], theme.palette) ||
-    ownerColor;
+    ownerColor
+      ?.split(".")
+      .reduce((value, key) => value?.[key], theme.palette) || ownerColor;
   const tileDropShadow =
     side === "top"
       ? "0 -8px 20px rgba(85,145,195,0.18)"
@@ -257,6 +287,34 @@ const Block = ({
           : "0 8px 20px rgba(85,145,195,0.2)";
   const ownerMarkerSize = isCorner ? 42 : 36;
   const ownerMarkerInset = tileGap - ownerMarkerSize / 2;
+  const ownerMarkerContentRotation = labelRotation;
+  const bonusMarkerSize = isCorner ? 46 : 40;
+  const bonusMarkerInset = tileGap - bonusMarkerSize / 2;
+  const bonusMarkerTextRotation = labelRotation;
+  const bonusMarkerPosition =
+    side === "bottom"
+      ? {
+          bottom: bonusMarkerInset,
+          left: "50%",
+          transform: "translateX(-50%)",
+        }
+      : side === "top"
+        ? {
+            top: bonusMarkerInset,
+            left: "50%",
+            transform: "translateX(-50%)",
+          }
+        : side === "left"
+          ? {
+              left: bonusMarkerInset,
+              top: "50%",
+              transform: "translateY(-50%)",
+            }
+          : {
+              right: bonusMarkerInset,
+              top: "50%",
+              transform: "translateY(-50%)",
+            };
   const ownerMarkerPosition =
     side === "bottom"
       ? {
@@ -280,9 +338,12 @@ const Block = ({
               left: ownerMarkerInset,
               top: "50%",
               transform: "translateY(-50%)",
-          };
+            };
   const tilePlayers =
     players || [user1, user2].filter((player) => Boolean(player));
+  const handleClick = useCallback(() => {
+    onClick?.(data);
+  }, [data, onClick]);
 
   useLayoutEffect(() => {
     const node = blockRef.current;
@@ -353,11 +414,12 @@ const Block = ({
 
     const flatTokenSize = Math.max(
       48,
-      Math.min(76, Math.min(screenRect.width, screenRect.height) * 0.82)
+      Math.min(76, Math.min(screenRect.width, screenRect.height) * 0.82),
     );
     const anchorX =
       screenRect.left + screenRect.width / 2 + slot * flatTokenSize * 0.36;
-    const anchorY = screenRect.top + screenRect.height / 2 + flatTokenSize * 0.22;
+    const anchorY =
+      screenRect.top + screenRect.height / 2 + flatTokenSize * 0.22;
 
     return createPortal(
       <PlayerToken
@@ -372,7 +434,7 @@ const Block = ({
           transform: "translate(-50%, -100%)",
         }}
       />,
-      tokenLayer
+      tokenLayer,
     );
   };
 
@@ -380,7 +442,7 @@ const Block = ({
     <>
       <Box
         ref={blockRef}
-        onClick={onClick}
+        onClick={onClick ? handleClick : undefined}
         sx={{
           position: "absolute",
           ...position,
@@ -390,182 +452,220 @@ const Block = ({
           cursor: onClick ? "pointer" : "default",
         }}
       >
-      <Box
-        sx={{
-          position: "absolute",
-          inset: tileGap,
-          display: "flex",
-          overflow: "hidden",
-          background: isSpecialCorner
-            ? tileSurface.specialSurface || tileSurface.accent
-            : `radial-gradient(circle at 28% 18%, rgba(255,255,255,0.95), transparent 28%), linear-gradient(145deg, ${tileSurface.accent}70, rgba(255,255,255,0.48) 48%, ${tileSurface.accent}38), ${tileSurface.surface}`,
-          backdropFilter: "blur(12px) saturate(1.45)",
-          justifyContent: "center",
-          alignItems: "center",
-          textAlign: "center",
-          color: "#243243",
-          fontSize: isCorner ? "20px" : "17px",
-          lineHeight: 1.05,
-          fontWeight: 900,
-          borderRadius: isCorner ? "18px" : "13px",
-          border: ownerDisplayColor
-            ? `4px solid ${ownerDisplayColor}`
-            : "1px solid rgba(255,255,255,0.78)",
-          boxShadow: isSpecialCorner
-            ? `${cornerDropShadow}, inset 0 1px 0 rgba(255,255,255,0.48)`
-            : ownerDisplayColor
-              ? `${ownedTileDropShadow}, 0 0 0 3px rgba(255,255,255,0.92), inset 0 1px 0 rgba(255,255,255,0.95), inset 0 0 0 7px ${ownerDisplayColor}33`
-              : `${tileDropShadow}, inset 0 1px 0 rgba(255,255,255,0.95), inset 0 0 0 2px rgba(255,255,255,0.42), inset 0 0 0 6px ${tileSurface.accent}33`,
-          outline: isSelected
-            ? "5px solid rgba(255,201,52,0.95)"
-            : isSelectable
-              ? "3px solid rgba(36,160,224,0.76)"
-              : "0 solid transparent",
-          outlineOffset: isSelected ? 2 : 1,
-          wordBreak: "keep-all",
-          whiteSpace: "normal",
-          px: 0.5,
-          textShadow: "0 1px 0 rgba(255,255,255,0.9)",
-          transition: "filter 160ms ease, outline-color 160ms ease",
-          "&:hover": {
-            filter: onClick ? "brightness(1.1) saturate(1.08)" : "brightness(1.08)",
-          },
-          ...block,
-          width: "auto",
-          height: "auto",
-        }}
-      >
         <Box
           sx={{
             position: "absolute",
-            ...layout.accent,
-            display: isSpecialCorner ? "none" : "block",
-            width: isVerticalSide ? accentThickness : "auto",
-            height: isVerticalSide ? "auto" : accentThickness,
-            background: `linear-gradient(180deg, rgba(255,255,255,0.3), transparent), ${tileSurface.accent}`,
-            borderBottom:
-              side === "bottom" ? "2px solid rgba(36,28,17,0.22)" : 0,
-            borderTop: side === "top" ? "2px solid rgba(36,28,17,0.22)" : 0,
-            borderLeft: side === "left" ? "2px solid rgba(36,28,17,0.22)" : 0,
-            borderRight: side === "right" ? "2px solid rgba(36,28,17,0.22)" : 0,
-            boxShadow:
-              `inset 0 2px 0 rgba(255,255,255,0.46), 0 0 18px ${tileSurface.accent}66`,
-            zIndex: 0,
-          }}
-        />
-        <Box
-          sx={{
-            position: "absolute",
-            inset: 6,
-            borderRadius: isCorner ? "14px" : "9px",
-            border: "1px solid rgba(255,255,255,0.42)",
-            pointerEvents: "none",
-            zIndex: 1,
-          }}
-        />
-        <Box
-          className="hb-tile-label"
-          sx={{
-            display: "grid",
-            gap: 0.25,
-            justifyItems: "center",
+            inset: tileGap,
+            display: "flex",
+            overflow: "hidden",
+            background: usesSpecialSurface
+              ? tileSurface.specialSurface || tileSurface.accent
+              : `radial-gradient(circle at 28% 18%, rgba(255,255,255,0.95), transparent 28%), linear-gradient(145deg, ${tileSurface.accent}70, rgba(255,255,255,0.48) 48%, ${tileSurface.accent}38), ${tileSurface.surface}`,
+            backdropFilter: "blur(12px) saturate(1.45)",
+            justifyContent: "center",
             alignItems: "center",
-            position: "absolute",
-            left: "50%",
-            top: "50%",
-            transform: `translate(-50%, -50%) rotate(${labelRotation}deg)`,
-            transformOrigin: "center",
-            zIndex: 1,
-            width: labelWidth,
-            minHeight: isProperty ? 34 : 44,
-            px: 0.75,
-            py: 0.45,
-            color: isSpecialCorner ? "#ffffff" : "#18324a",
-            borderRadius: "999px",
-            background: isSpecialCorner
-              ? "transparent"
-              : "linear-gradient(180deg, rgba(255,255,255,0.34), rgba(255,255,255,0.2))",
-            backdropFilter: isSpecialCorner
-              ? "none"
-              : "blur(10px) saturate(1.12)",
-            WebkitBackdropFilter: isSpecialCorner
-              ? "none"
-              : "blur(10px) saturate(1.12)",
-            border: isSpecialCorner
-              ? "0"
-              : "1px solid rgba(255,255,255,0.32)",
-            boxShadow: isSpecialCorner
-              ? "none"
-              : `inset 0 1px 0 rgba(255,255,255,0.34), inset 0 -1px 0 ${tileSurface.accent}18`,
-            "& svg": {
-              color: isSpecialCorner ? "#ffffff" : tileSurface.accent,
-              fontSize: isCorner ? 24 : 18,
-              filter: isSpecialCorner
-                ? "drop-shadow(0 2px 2px rgba(41,86,134,0.35))"
-                : "drop-shadow(0 1px 0 rgba(255,255,255,0.85))",
+            textAlign: "center",
+            color: "#243243",
+            fontSize: isCorner ? "20px" : "17px",
+            lineHeight: 1.05,
+            fontWeight: 900,
+            borderRadius: isCorner ? "18px" : "13px",
+            border: ownerDisplayColor
+              ? `4px solid ${ownerDisplayColor}`
+              : "1px solid rgba(255,255,255,0.78)",
+            boxShadow: usesSpecialSurface
+              ? `${cornerDropShadow}, inset 0 1px 0 rgba(255,255,255,0.48)`
+              : ownerDisplayColor
+                ? `${ownedTileDropShadow}, 0 0 0 3px rgba(255,255,255,0.92), inset 0 1px 0 rgba(255,255,255,0.95), inset 0 0 0 7px ${ownerDisplayColor}33`
+                : `${tileDropShadow}, inset 0 1px 0 rgba(255,255,255,0.95), inset 0 0 0 2px rgba(255,255,255,0.42), inset 0 0 0 6px ${tileSurface.accent}33`,
+            outline: isSelected
+              ? "5px solid rgba(255,201,52,0.95)"
+              : isRollPreview
+                ? "6px solid rgba(255,112,67,0.96)"
+              : isSelectable
+                ? "3px solid rgba(36,160,224,0.76)"
+                : "0 solid transparent",
+            outlineOffset: isSelected || isRollPreview ? 2 : 1,
+            wordBreak: "keep-all",
+            whiteSpace: "normal",
+            px: 0.5,
+            textShadow: "0 1px 0 rgba(255,255,255,0.9)",
+            transition:
+              "filter 160ms ease, outline-color 160ms ease, box-shadow 160ms ease",
+            "&:hover": {
+              filter: onClick
+                ? "brightness(1.1) saturate(1.08)"
+                : "brightness(1.08)",
             },
-            "& span": {
-              display: "-webkit-box",
-              maxWidth: "100%",
-              overflow: "hidden",
-              whiteSpace: "pre-line",
-              WebkitBoxOrient: "vertical",
-              WebkitLineClamp: 2,
-              textShadow: isSpecialCorner
-                ? "0 2px 3px rgba(41,86,134,0.38)"
-                : "0 1px 0 rgba(255,255,255,0.9)",
-            },
+            ...block,
+            width: "auto",
+            height: "auto",
           }}
         >
-          <TileIcon kind={data?.kind} />
-          <span>{tileName}</span>
-        </Box>
-
-        {data?.olympicHost && (
-          <Chip
-            size="small"
-            icon={<EmojiEventsIcon />}
-            label="2x"
+          <Box
             sx={{
               position: "absolute",
-              bottom: 4,
-              height: 20,
-              zIndex: 2,
-              color: "#4a2d00",
-              backgroundColor: "rgba(255,213,79,0.78)",
-              backdropFilter: "blur(8px)",
-              border: "1px solid rgba(255,255,255,0.72)",
-              boxShadow: "0 3px 8px rgba(85,145,195,0.18)",
-              "& .MuiChip-icon": { color: "#4a2d00", fontSize: 14 },
+              ...layout.accent,
+              display: usesSpecialSurface ? "none" : "block",
+              width: isVerticalSide ? accentThickness : "auto",
+              height: isVerticalSide ? "auto" : accentThickness,
+              background: `linear-gradient(180deg, rgba(255,255,255,0.3), transparent), ${tileSurface.accent}`,
+              borderBottom:
+                side === "bottom" ? "2px solid rgba(36,28,17,0.22)" : 0,
+              borderTop: side === "top" ? "2px solid rgba(36,28,17,0.22)" : 0,
+              borderLeft: side === "left" ? "2px solid rgba(36,28,17,0.22)" : 0,
+              borderRight:
+                side === "right" ? "2px solid rgba(36,28,17,0.22)" : 0,
+              boxShadow: `inset 0 2px 0 rgba(255,255,255,0.46), 0 0 18px ${tileSurface.accent}66`,
+              zIndex: 0,
             }}
           />
+          <Box
+            sx={{
+              position: "absolute",
+              inset: 6,
+              borderRadius: isCorner ? "14px" : "9px",
+              border: "1px solid rgba(255,255,255,0.42)",
+              pointerEvents: "none",
+              zIndex: 1,
+            }}
+          />
+          <Box
+            className="hb-tile-label"
+            sx={{
+              display: "grid",
+              gap: 0.25,
+              justifyItems: "center",
+              alignItems: "center",
+              position: "absolute",
+              left: "50%",
+              top: "50%",
+              transform: `translate(-50%, -50%) rotate(${labelRotation}deg)`,
+              transformOrigin: "center",
+              zIndex: 1,
+              width: labelWidth,
+              minHeight: isProperty ? 34 : 44,
+              px: 0.75,
+              py: 0.45,
+              color: usesSpecialSurface ? "#ffffff" : "#18324a",
+              borderRadius: "999px",
+              background: usesSpecialSurface
+                ? "transparent"
+                : "linear-gradient(180deg, rgba(255,255,255,0.34), rgba(255,255,255,0.2))",
+              backdropFilter: usesSpecialSurface
+                ? "none"
+                : "blur(10px) saturate(1.12)",
+              WebkitBackdropFilter: usesSpecialSurface
+                ? "none"
+                : "blur(10px) saturate(1.12)",
+              border: usesSpecialSurface
+                ? "0"
+                : "1px solid rgba(255,255,255,0.32)",
+              boxShadow: usesSpecialSurface
+                ? "none"
+                : `inset 0 1px 0 rgba(255,255,255,0.34), inset 0 -1px 0 ${tileSurface.accent}18`,
+              "& svg": {
+                color: usesSpecialSurface ? "#ffffff" : tileSurface.accent,
+                fontSize: isCorner ? 24 : 18,
+                filter: usesSpecialSurface
+                  ? "drop-shadow(0 2px 2px rgba(41,86,134,0.35))"
+                  : "drop-shadow(0 1px 0 rgba(255,255,255,0.85))",
+              },
+              "& span": {
+                display: "-webkit-box",
+                maxWidth: "100%",
+                overflow: "hidden",
+                whiteSpace: "pre-line",
+                WebkitBoxOrient: "vertical",
+                WebkitLineClamp: 2,
+                textShadow: usesSpecialSurface
+                  ? "0 2px 3px rgba(41,86,134,0.38)"
+                  : "0 1px 0 rgba(255,255,255,0.9)",
+              },
+            }}
+          >
+            <TileIcon kind={data?.kind} />
+            <span>{tileName}</span>
+          </Box>
+        </Box>
+        {hasTollBonuses && (
+          <Box
+            title={tollBonusCaption}
+            sx={{
+              position: "absolute",
+              ...bonusMarkerPosition,
+              width: bonusMarkerSize,
+              height: bonusMarkerSize,
+              display: "grid",
+              placeItems: "center",
+              color: "#5b3500",
+              borderRadius: isCorner ? "14px" : "12px",
+              background:
+                "linear-gradient(180deg, rgba(255,246,196,0.98), rgba(255,213,79,0.94) 54%, rgba(245,158,11,0.96))",
+              border: "3px solid rgba(255,255,255,0.96)",
+              boxShadow:
+                "0 10px 18px rgba(156,92,0,0.34), inset 0 2px 0 rgba(255,255,255,0.58), 0 0 0 2px rgba(134,75,0,0.18)",
+              pointerEvents: "none",
+              zIndex: 13,
+              "&::before": {
+                content: '""',
+                position: "absolute",
+                inset: 5,
+                borderRadius: isCorner ? "9px" : "7px",
+                border: "1px solid rgba(255,255,255,0.52)",
+                boxShadow: "inset 0 -1px 0 rgba(128,73,0,0.18)",
+              },
+            }}
+          >
+            <Box
+              component="span"
+              sx={{
+                color: "#5b3500",
+                fontSize: isCorner ? 17 : 15,
+                fontWeight: 950,
+                lineHeight: 1,
+                letterSpacing: "0 !important",
+                textShadow: "0 1px 0 rgba(255,255,255,0.72)",
+                transform: `rotate(${bonusMarkerTextRotation}deg)`,
+              }}
+            >
+              {tollBonusMultiplier}
+            </Box>
+          </Box>
         )}
-      </Box>
-      {data?.owner && (
-        <Box
-          sx={{
-            position: "absolute",
-            ...ownerMarkerPosition,
-            color: "#ffffff",
-            zIndex: 12,
-            width: ownerMarkerSize,
-            height: ownerMarkerSize,
-            display: "grid",
-            placeItems: "center",
-            borderRadius: isCorner ? "12px" : "10px",
-            background: ownerDisplayColor,
-            backdropFilter: "blur(8px) saturate(1.2)",
-            border: "3px solid rgba(255,255,255,0.96)",
-            boxShadow:
-              "0 10px 18px rgba(22,66,110,0.34), inset 0 1px 0 rgba(255,255,255,0.42), 0 0 0 2px rgba(31,54,80,0.14)",
-            pointerEvents: "none",
+        {data?.owner && (
+          <Box
+            sx={{
+              position: "absolute",
+              ...ownerMarkerPosition,
+              color: "#ffffff",
+              zIndex: 12,
+              width: ownerMarkerSize,
+              height: ownerMarkerSize,
+              display: "grid",
+              placeItems: "center",
+              borderRadius: isCorner ? "12px" : "10px",
+              background: ownerDisplayColor,
+              backdropFilter: "blur(8px) saturate(1.2)",
+              border: "3px solid rgba(255,255,255,0.96)",
+              boxShadow:
+                "0 10px 18px rgba(22,66,110,0.34), inset 0 1px 0 rgba(255,255,255,0.42), 0 0 0 2px rgba(31,54,80,0.14)",
+              pointerEvents: "none",
             "& svg": {
               fontSize: isCorner ? 26 : 23,
               filter: "drop-shadow(0 2px 2px rgba(0,0,0,0.3))",
             },
           }}
         >
-          <OwnerIcon type={data.owner.type} />
+          <Box
+            sx={{
+              display: "grid",
+              placeItems: "center",
+              transform: `rotate(${ownerMarkerContentRotation}deg)`,
+            }}
+          >
+            <OwnerIcon type={data.owner.type} />
+          </Box>
         </Box>
       )}
       </Box>
@@ -580,4 +680,17 @@ const Block = ({
   );
 };
 
-export default Block;
+const areBlockPropsEqual = (previous, next) =>
+  previous.data === next.data &&
+  previous.position === next.position &&
+  previous.block === next.block &&
+  previous.side === next.side &&
+  previous.players === next.players &&
+  previous.tokenLayer === next.tokenLayer &&
+  previous.tollBonuses === next.tollBonuses &&
+  previous.onClick === next.onClick &&
+  previous.isSelectable === next.isSelectable &&
+  previous.isSelected === next.isSelected &&
+  previous.isRollPreview === next.isRollPreview;
+
+export default memo(Block, areBlockPropsEqual);

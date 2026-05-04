@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+﻿import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import "./App.css";
 import Block from "@/components/block";
@@ -31,6 +31,7 @@ import FullscreenIcon from "@mui/icons-material/Fullscreen";
 import FullscreenExitIcon from "@mui/icons-material/FullscreenExit";
 import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
+import RestartAltIcon from "@mui/icons-material/RestartAlt";
 
 import User1 from "@/assets/User1.jpg";
 import User2 from "@/assets/User2.jpg";
@@ -44,7 +45,66 @@ const SALARY = 300000;
 const BOARD_SIZE = 32;
 const BUILD_ORDER = ["land", "villa", "building", "hotel", "landmark"];
 const MONOPOLY_TOLL_MULTIPLIER = 2;
+const RESORT_BASE_TOLL_MULTIPLIER = 1;
 const HOST_SNAPSHOT_KEY_PREFIX = "hb_world.hostGameState:";
+const APP_FULLSCREEN_CLASS = "hb-app-fullscreen";
+const BONUS_BASE_PRIZE = 100000;
+const BONUS_MAX_ROUND = 5;
+const COIN_SIDE_LABELS = {
+  heads: "앞면",
+  tails: "뒷면",
+};
+const EMPTY_TILE_PLAYERS = Object.freeze([]);
+const EMPTY_TOLL_BONUSES = Object.freeze([]);
+const EMPTY_BOARD_TILES = Object.freeze([]);
+
+const BOARD_TILE_LAYOUT = Array.from({ length: BOARD_SIZE }, (_, index) => {
+  const sideIndex = Math.trunc(index / 8);
+  const side = ["bottom", "left", "top", "right"][sideIndex] || "bottom";
+  const num = index % 8;
+  const isCorner = num === 0;
+  const isSideLine = side === "left" || side === "right";
+  const block = isCorner
+    ? { width: cornerBlockSize, height: cornerBlockSize }
+    : isSideLine
+      ? { width: blockHeight, height: blockWidth }
+      : { width: blockWidth, height: blockHeight };
+  const position = { top: 0, left: 0 };
+
+  switch (sideIndex) {
+    case 0:
+      position.top = mapHeight - block.height;
+      position.left = isCorner
+        ? mapWidth - cornerBlockSize
+        : mapWidth - cornerBlockSize - num * blockWidth;
+      break;
+    case 1:
+      position.top = isCorner
+        ? mapHeight - cornerBlockSize
+        : mapHeight - cornerBlockSize - num * blockWidth;
+      position.left = 0;
+      break;
+    case 2:
+      position.top = 0;
+      position.left = isCorner ? 0 : cornerBlockSize + (num - 1) * blockWidth;
+      break;
+    case 3:
+      position.top = isCorner ? 0 : cornerBlockSize + (num - 1) * blockWidth;
+      position.left = isCorner
+        ? mapWidth - cornerBlockSize
+        : mapWidth - blockHeight;
+      break;
+    default:
+      break;
+  }
+
+  return { block, position, side };
+});
+
+const getBuildingSaleValue = (tile) =>
+  tile?.owner?.type
+    ? Math.round((tile.costs?.[tile.owner.type]?.build || 0) * 0.8)
+    : 0;
 
 const PLAYER_PRESETS = [
   {
@@ -87,6 +147,19 @@ const rollFallbackDice = () => [
   Math.floor(Math.random() * 6) + 1,
 ];
 
+const flipCoin = () => (Math.random() < 0.5 ? "heads" : "tails");
+
+const getRollPreviewTileIdx = (player, diceValues) => {
+  if (!player || !diceValues?.length) return null;
+
+  const [first, second] = diceValues;
+  if (player.position === 8 && player.stop > 0 && first !== second) {
+    return player.position;
+  }
+
+  return normalizePosition(player.position + first + second);
+};
+
 const createInitialPlayers = (roomPlayers = []) =>
   roomPlayers.map((roomPlayer, index) => {
     const preset = PLAYER_PRESETS[index] || PLAYER_PRESETS[0];
@@ -102,6 +175,7 @@ const createInitialPlayers = (roomPlayers = []) =>
       city: [],
       stop: 0,
       tollPasses: 0,
+      islandPasses: 0,
       connected: roomPlayer.connected !== false,
     };
   });
@@ -116,6 +190,9 @@ const normalizeSnapshotPlayers = (snapshotPlayers = [], roomPlayers = []) =>
       img: preset.img,
       color: player.color || preset.color,
       tokenLabel: player.tokenLabel || preset.tokenLabel,
+      stop: player.stop ?? 0,
+      tollPasses: player.tollPasses ?? 0,
+      islandPasses: player.islandPasses ?? 0,
       connected: roomPlayer ? roomPlayer.connected !== false : player.connected,
     };
   });
@@ -124,12 +201,35 @@ const readHostSnapshot = (roomCode) => {
   if (!roomCode) return null;
 
   try {
-    const value = sessionStorage.getItem(`${HOST_SNAPSHOT_KEY_PREFIX}${roomCode}`);
+    const value = sessionStorage.getItem(
+      `${HOST_SNAPSHOT_KEY_PREFIX}${roomCode}`,
+    );
     return value ? JSON.parse(value) : null;
   } catch {
     return null;
   }
 };
+
+const getNativeFullscreenElement = () =>
+  document.fullscreenElement || document.webkitFullscreenElement || null;
+
+const getRequestFullscreen = (element) =>
+  element.requestFullscreen || element.webkitRequestFullscreen;
+
+const getExitFullscreen = () =>
+  document.exitFullscreen || document.webkitExitFullscreen;
+
+const setAppFullscreenFallback = (enabled) => {
+  document.documentElement.classList.toggle(APP_FULLSCREEN_CLASS, enabled);
+  document.body?.classList.toggle(APP_FULLSCREEN_CLASS, enabled);
+
+  if (enabled) {
+    window.scrollTo?.(0, 0);
+  }
+};
+
+const isAppFullscreenFallback = () =>
+  document.documentElement.classList.contains(APP_FULLSCREEN_CLASS);
 
 function App() {
   const {
@@ -147,6 +247,7 @@ function App() {
     clearRoomSession,
   } = useMultiplayer();
   const diceRollerRef = useRef(null);
+  const pendingRollAnimationsRef = useRef(new Map());
   const [tokenLayer, setTokenLayer] = useState(null);
   const [view, setView] = useState("landing");
   const [createForm, setCreateForm] = useState({ name: "", maxPlayers: 2 });
@@ -162,6 +263,8 @@ function App() {
   const [diceError, setDiceError] = useState(null);
   const [dice1, setDice1] = useState(1);
   const [dice2, setDice2] = useState(1);
+  const [lastRollId, setLastRollId] = useState(null);
+  const [rollPreviewTileIdx, setRollPreviewTileIdx] = useState(null);
   const [pendingAction, setPendingAction] = useState(null);
   const [selectedDestination, setSelectedDestination] = useState("");
   const [selectedOlympicCity, setSelectedOlympicCity] = useState("");
@@ -179,6 +282,25 @@ function App() {
     () => Object.fromEntries(players.map((player) => [player.id, player])),
     [players],
   );
+  const playersByPosition = useMemo(() => {
+    const nextPlayersByPosition = new Map();
+
+    players.forEach((player) => {
+      const tilePlayers =
+        nextPlayersByPosition.get(player.position) || [];
+      tilePlayers.push(player);
+      nextPlayersByPosition.set(player.position, tilePlayers);
+    });
+
+    return nextPlayersByPosition;
+  }, [players]);
+  const playerPanelStyles = useMemo(
+    () =>
+      Array.from({ length: players.length }, (_, index) =>
+        getPlayerPanelSx(index, players.length),
+      ),
+    [players.length],
+  );
   const activePlayer = playersById[turn] || players[0] || null;
   const canAct = gameStarted && localPlayerId === turn && !winner;
 
@@ -186,14 +308,31 @@ function App() {
     if (typeof document === "undefined") return undefined;
 
     const updateFullscreenState = () => {
-      setIsFullscreen(!!document.fullscreenElement);
+      setIsFullscreen(
+        Boolean(getNativeFullscreenElement()) || isAppFullscreenFallback(),
+      );
     };
 
     updateFullscreenState();
     document.addEventListener("fullscreenchange", updateFullscreenState);
+    document.addEventListener("webkitfullscreenchange", updateFullscreenState);
+    window.addEventListener("resize", updateFullscreenState);
+    window.addEventListener("orientationchange", updateFullscreenState);
+    window.visualViewport?.addEventListener("resize", updateFullscreenState);
 
     return () => {
       document.removeEventListener("fullscreenchange", updateFullscreenState);
+      document.removeEventListener(
+        "webkitfullscreenchange",
+        updateFullscreenState,
+      );
+      window.removeEventListener("resize", updateFullscreenState);
+      window.removeEventListener("orientationchange", updateFullscreenState);
+      window.visualViewport?.removeEventListener(
+        "resize",
+        updateFullscreenState,
+      );
+      setAppFullscreenFallback(false);
     };
   }, []);
 
@@ -240,6 +379,8 @@ function App() {
     setIsRolling(false);
     setDice1(1);
     setDice2(1);
+    setLastRollId(null);
+    setRollPreviewTileIdx(null);
     setPendingAction(null);
     setSelectedDestination("");
     setSelectedOlympicCity("");
@@ -283,19 +424,50 @@ function App() {
     setDiceError(error);
   }, []);
 
-  const toggleFullscreen = () => {
+  const toggleFullscreen = async () => {
     if (typeof document === "undefined") return;
 
-    if (document.fullscreenElement) {
-      document.exitFullscreen?.().catch(() => {});
+    if (getNativeFullscreenElement()) {
+      const exitFullscreen = getExitFullscreen();
+      if (exitFullscreen) {
+        await exitFullscreen.call(document).catch(() => {});
+      }
+      setAppFullscreenFallback(false);
+      setIsFullscreen(false);
       return;
     }
 
-    document.documentElement.requestFullscreen?.().catch(() => {});
+    if (isAppFullscreenFallback()) {
+      setAppFullscreenFallback(false);
+      setIsFullscreen(false);
+      return;
+    }
+
+    const requestFullscreen = getRequestFullscreen(document.documentElement);
+
+    if (requestFullscreen) {
+      try {
+        await requestFullscreen.call(document.documentElement);
+        setIsFullscreen(true);
+        return;
+      } catch {
+        // iOS Safari can expose the API but reject it for non-video elements.
+      }
+    }
+
+    setAppFullscreenFallback(true);
+    setIsFullscreen(true);
   };
 
   const handleFullscreenAction = () => {
     toggleFullscreen();
+  };
+
+  const handleRestartGame = () => {
+    if (!isHost || isMoving || isRolling) return;
+
+    restartGame();
+    setIsToolDrawerOpen(false);
   };
 
   const getNextPlayerId = (playerId) => {
@@ -309,6 +481,7 @@ function App() {
 
   const endTurn = () => {
     setPendingAction(null);
+    setRollPreviewTileIdx(null);
     setSelectedDestination("");
     setSelectedOlympicCity("");
     setSelectedInfoTileIdx(null);
@@ -373,22 +546,45 @@ function App() {
     await movePlayer(playerId, steps, options);
   };
 
-  const rollDice = async () => {
+  const playDiceAnimation = (diceValues) => {
+    setIsRolling(true);
+
+    return Promise.resolve(
+      diceRollerRef.current?.show?.(diceValues) ?? diceValues,
+    )
+      .catch((error) => {
+        handleDiceError(error);
+        return diceValues;
+      })
+      .finally(() => {
+        setIsRolling(false);
+      });
+  };
+
+  const trackRollAnimation = (rollId, animationPromise) => {
+    pendingRollAnimationsRef.current.set(rollId, animationPromise);
+    animationPromise.finally(() => {
+      pendingRollAnimationsRef.current.delete(rollId);
+    });
+  };
+
+  const rollDice = () => {
     if (!canAct || isAction || isMoving || isRolling || !diceReady) return;
 
-    setIsRolling(true);
-    let diceValues = rollFallbackDice();
+    const diceValues = rollFallbackDice();
+    const rollId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    displayedRollIdRef.current = rollId;
+    setDice1(diceValues[0]);
+    setDice2(diceValues[1]);
+    setLastRollId(rollId);
+    setRollPreviewTileIdx(getRollPreviewTileIdx(activePlayer, diceValues));
+    trackRollAnimation(rollId, playDiceAnimation(diceValues));
 
-    try {
-      diceValues = diceRollerRef.current
-        ? await diceRollerRef.current.roll()
-        : rollFallbackDice();
-    } catch (error) {
-      handleDiceError(error);
-    }
-
-    setIsRolling(false);
-    requestCommand({ type: "roll_dice", diceValues });
+    requestCommand({
+      type: "roll_dice",
+      diceValues,
+      rollId,
+    });
   };
 
   const applyDiceRoll = async (playerId, diceValues) => {
@@ -410,6 +606,7 @@ function App() {
       } else {
         const nextStop = player.stop - 1;
         setPlayerById(playerId, (current) => ({ ...current, stop: nextStop }));
+        setRollPreviewTileIdx(null);
         setMessage(
           "무인도 대기",
           nextStop
@@ -424,6 +621,8 @@ function App() {
   };
 
   const resolveTile = (playerId, tile) => {
+    setRollPreviewTileIdx(null);
+
     if (!tile) {
       setMessage("도착", "이번 칸에는 특별한 행동이 없습니다.");
       return;
@@ -431,8 +630,14 @@ function App() {
 
     switch (tile.kind) {
       case "city":
-      case "resort":
         setPendingAction({ type: "tile", tileIdx: tile.idx });
+        break;
+      case "resort":
+        if (tile.owner?.id === playerId) {
+          growResortToll(playerId, tile);
+        } else {
+          setPendingAction({ type: "tile", tileIdx: tile.idx });
+        }
         break;
       case "goldenKey": {
         const card =
@@ -456,13 +661,28 @@ function App() {
         }
         break;
       }
-      case "island":
-        setPlayerById(playerId, (player) => ({ ...player, stop: 3 }));
+      case "island": {
+        const player = playersById[playerId];
+
+        if ((player?.islandPasses || 0) > 0) {
+          setPlayerById(playerId, (current) => ({
+            ...current,
+            islandPasses: Math.max((current.islandPasses || 0) - 1, 0),
+          }));
+          setMessage(
+            "무인도 탈출권 사용",
+            "무인도에 도착했지만 탈출권을 사용해 바로 빠져나왔습니다.",
+          );
+          break;
+        }
+
+        setPlayerById(playerId, (current) => ({ ...current, stop: 3 }));
         setMessage(
           "무인도 도착",
           "3턴 동안 대기합니다. 더블이 나오면 바로 탈출합니다.",
         );
         break;
+      }
       case "tax":
         {
           const ownedCount = getOwnedBuildableTiles(playerId).length;
@@ -477,14 +697,101 @@ function App() {
         }
         break;
       case "bonus":
-        updatePlayerMoney(playerId, 100000);
-        setMessage("보너스 게임", "보너스 100,000원을 받았습니다.");
+        setPendingAction({
+          type: "bonusGame",
+          round: 1,
+          prize: BONUS_BASE_PRIZE,
+          result: null,
+          selectedSide: null,
+          coinSide: null,
+        });
         break;
       case "start":
       default:
         setMessage(tile.name, "이번 칸에는 특별한 행동이 없습니다.");
         break;
     }
+  };
+
+  const applyFreeUpgrade = (playerId) => {
+    const targetTile = board.find((tile) => {
+      const buildIndex = BUILD_ORDER.indexOf(tile.owner?.type);
+
+      return (
+        tile.kind === "city" &&
+        tile.owner?.id === playerId &&
+        buildIndex >= 0 &&
+        buildIndex < BUILD_ORDER.length - 1
+      );
+    });
+
+    if (!targetTile) {
+      updatePlayerMoney(playerId, 100000);
+      return;
+    }
+
+    const nextType =
+      BUILD_ORDER[BUILD_ORDER.indexOf(targetTile.owner.type) + 1];
+
+    setBoard((currentBoard) =>
+      currentBoard.map((tile) =>
+        tile.idx === targetTile.idx
+          ? {
+              ...tile,
+              owner: {
+                ...tile.owner,
+                type: nextType,
+              },
+            }
+          : tile,
+      ),
+    );
+    setPlayerById(playerId, (player) => ({
+      ...player,
+      city: player.city.map((item) =>
+        item.idx === targetTile.idx ? { ...item, type: nextType } : item,
+      ),
+    }));
+  };
+
+  const growResortToll = (playerId, tile) => {
+    if (tile.kind !== "resort" || tile.owner?.id !== playerId) return;
+
+    const nextMultiplier =
+      (tile.resortTollMultiplier || RESORT_BASE_TOLL_MULTIPLIER) + 1;
+
+    setBoard((currentBoard) =>
+      currentBoard.map((item) =>
+        item.idx === tile.idx
+          ? {
+              ...item,
+              resortTollMultiplier: nextMultiplier,
+            }
+          : item,
+      ),
+    );
+    setMessage(
+      "휴양지 통행료 상승",
+      `${tile.name}에 다시 도착해 통행료가 ${nextMultiplier}배로 올랐습니다.`,
+    );
+  };
+
+  const swapPlayerPositions = (playerId, otherId) => {
+    if (playerId === otherId) return;
+    const player = playersById[playerId];
+    const otherPlayer = playersById[otherId];
+
+    if (!player || !otherPlayer) return;
+
+    setPlayers((currentPlayers) =>
+      currentPlayers.map((current) =>
+        current.id === playerId
+          ? { ...current, position: otherPlayer.position }
+          : current.id === otherId
+            ? { ...current, position: player.position }
+            : current,
+      ),
+    );
   };
 
   const applyGoldenKey = (playerId, card) => {
@@ -508,9 +815,74 @@ function App() {
           tollPasses: player.tollPasses + 1,
         }));
         break;
+      case "freeUpgrade":
+        applyFreeUpgrade(playerId);
+        break;
+      case "swapPosition":
+        swapPlayerPositions(playerId, otherId);
+        break;
+      case "islandPass":
+        setPlayerById(playerId, (player) => ({
+          ...player,
+          islandPasses: (player.islandPasses || 0) + 1,
+        }));
+        break;
       default:
         break;
     }
+  };
+
+  const submitBonusGuess = (playerId, selectedSide) => {
+    if (pendingAction?.type !== "bonusGame" || pendingAction.result) return;
+
+    const coinSide = flipCoin();
+
+    if (selectedSide !== coinSide) {
+      setMessage(
+        "보너스 실패",
+        `${COIN_SIDE_LABELS[selectedSide]}을 선택했지만 ${COIN_SIDE_LABELS[coinSide]}이 나왔습니다. 쌓아온 상금은 받을 수 없습니다.`,
+      );
+      return;
+    }
+
+    setPendingAction({
+      ...pendingAction,
+      selectedSide,
+      coinSide,
+      result: "win",
+      playerId,
+    });
+  };
+
+  const collectBonusPrize = (playerId) => {
+    if (pendingAction?.type !== "bonusGame" || pendingAction.result !== "win") {
+      return;
+    }
+
+    updatePlayerMoney(playerId, pendingAction.prize);
+    setMessage(
+      "보너스 상금 수령",
+      `${NumberToMoney(pendingAction.prize)}을 받았습니다.`,
+    );
+  };
+
+  const continueBonusRound = () => {
+    if (
+      pendingAction?.type !== "bonusGame" ||
+      pendingAction.result !== "win" ||
+      pendingAction.round >= BONUS_MAX_ROUND
+    ) {
+      return;
+    }
+
+    setPendingAction({
+      type: "bonusGame",
+      round: pendingAction.round + 1,
+      prize: pendingAction.prize * 2,
+      result: null,
+      selectedSide: null,
+      coinSide: null,
+    });
   };
 
   const resolveGoldenKeyMovement = async () => {
@@ -536,10 +908,95 @@ function App() {
     endTurn();
   };
 
+  const openSellBuildingsAction = ({
+    purchaseType,
+    tile,
+    requiredAmount,
+    buildType = "",
+  }) => {
+    const player = playersById[turn];
+    if (!player || !tile) return;
+
+    setPendingAction({
+      type: "sellBuildings",
+      purchaseType,
+      tileIdx: tile.idx,
+      buildType,
+      requiredAmount,
+      shortfall: Math.max(requiredAmount - player.money, 0),
+    });
+  };
+
+  const restoreTileActionFromSale = (saleAction = pendingAction) => {
+    if (!saleAction?.tileIdx && saleAction?.tileIdx !== 0) return;
+
+    setPendingAction({
+      type: "tile",
+      tileIdx: saleAction.tileIdx,
+      defaultBuildType: saleAction.buildType || "",
+    });
+  };
+
+  const sellBuildings = (tileIdxs = []) => {
+    if (pendingAction?.type !== "sellBuildings") return;
+
+    const selectedTileIdxs = new Set(
+      tileIdxs.map((tileIdx) => Number(tileIdx)),
+    );
+    const soldTiles = board.filter(
+      (tile) =>
+        selectedTileIdxs.has(tile.idx) &&
+        tile.owner?.id === turn &&
+        getBuildingSaleValue(tile) > 0,
+    );
+    const saleTotal = soldTiles.reduce(
+      (total, tile) => total + getBuildingSaleValue(tile),
+      0,
+    );
+
+    if (saleTotal > 0) {
+      const soldTileIdxs = new Set(soldTiles.map((tile) => tile.idx));
+
+      setBoard((currentBoard) =>
+        currentBoard.map((tile) =>
+          soldTileIdxs.has(tile.idx)
+            ? {
+                ...tile,
+                owner: undefined,
+                olympicHost: false,
+                ...(tile.kind === "resort"
+                  ? { resortTollMultiplier: RESORT_BASE_TOLL_MULTIPLIER }
+                  : {}),
+              }
+            : tile,
+        ),
+      );
+      setPlayerById(turn, (current) => ({
+        ...current,
+        money: current.money + saleTotal,
+        city: current.city.filter((item) => !soldTileIdxs.has(item.idx)),
+      }));
+    }
+
+    restoreTileActionFromSale();
+  };
+
   const buildCity = (tile, type) => {
     const player = playersById[turn];
     if (!player) return;
     const cost = tile.costs[type];
+    if (!cost) return;
+
+    if (cost.build > player.money) {
+      openSellBuildingsAction({
+        purchaseType: "build",
+        tile,
+        buildType: type,
+        requiredAmount: cost.build,
+      });
+      return;
+    }
+
     const isUpgrade = tile.owner?.id === player.id;
 
     setBoard((currentBoard) => {
@@ -553,6 +1010,9 @@ function App() {
                 color: player.color,
                 type,
               },
+              ...(item.kind === "resort"
+                ? { resortTollMultiplier: RESORT_BASE_TOLL_MULTIPLIER }
+                : {}),
             }
           : item,
       );
@@ -607,6 +1067,15 @@ function App() {
     const toll = getToll(tile);
     const acquisitionCost = toll + buildCost * 2;
 
+    if (acquisitionCost > player.money) {
+      openSellBuildingsAction({
+        purchaseType: "acquire",
+        tile,
+        requiredAmount: acquisitionCost,
+      });
+      return;
+    }
+
     transferMoney(turn, ownerId, acquisitionCost);
     setBoard((currentBoard) =>
       currentBoard.map((item) =>
@@ -637,15 +1106,92 @@ function App() {
     endTurn();
   };
 
+  const monopolyKeys = useMemo(() => {
+    const tilesByColor = new Map();
+
+    board.forEach((tile) => {
+      if (
+        !tile.color ||
+        (tile.kind !== "city" && tile.kind !== "resort")
+      ) {
+        return;
+      }
+
+      const colorGroup =
+        tilesByColor.get(tile.color) || {
+          total: 0,
+          ownerCounts: new Map(),
+        };
+      colorGroup.total += 1;
+
+      if (tile.owner?.id) {
+        colorGroup.ownerCounts.set(
+          tile.owner.id,
+          (colorGroup.ownerCounts.get(tile.owner.id) || 0) + 1,
+        );
+      }
+
+      tilesByColor.set(tile.color, colorGroup);
+    });
+
+    const nextMonopolyKeys = new Set();
+
+    tilesByColor.forEach((colorGroup, color) => {
+      if (colorGroup.total <= 1) return;
+
+      colorGroup.ownerCounts.forEach((ownedCount, playerId) => {
+        if (ownedCount === colorGroup.total) {
+          nextMonopolyKeys.add(`${playerId}:${color}`);
+        }
+      });
+    });
+
+    return nextMonopolyKeys;
+  }, [board]);
+
+  const hasColorMonopoly = useCallback(
+    (playerId, color) =>
+      Boolean(playerId && color && monopolyKeys.has(`${playerId}:${color}`)),
+    [monopolyKeys],
+  );
+
+  const ownedBuildableTilesByPlayer = useMemo(() => {
+    const nextOwnedTiles = new Map();
+
+    board.forEach((tile) => {
+      if (
+        (tile.kind !== "city" && tile.kind !== "resort") ||
+        !tile.owner?.id
+      ) {
+        return;
+      }
+
+      const ownerTiles = nextOwnedTiles.get(tile.owner.id) || [];
+      ownerTiles.push(tile);
+      nextOwnedTiles.set(tile.owner.id, ownerTiles);
+    });
+
+    return nextOwnedTiles;
+  }, [board]);
+
+  const getOwnedBuildableTiles = useCallback(
+    (playerId) => ownedBuildableTilesByPlayer.get(playerId) || EMPTY_BOARD_TILES,
+    [ownedBuildableTilesByPlayer],
+  );
+
   const getToll = (tile) => {
     if (!tile?.owner) return 0;
     const baseToll = tile.costs[tile.owner.type].toll;
+    const resortBonus =
+      tile.kind === "resort"
+        ? tile.resortTollMultiplier || RESORT_BASE_TOLL_MULTIPLIER
+        : 1;
     const olympicBonus = tile.olympicHost ? 2 : 1;
     const monopolyBonus = hasColorMonopoly(tile.owner.id, tile.color)
       ? MONOPOLY_TOLL_MULTIPLIER
       : 1;
 
-    return Math.round(baseToll * olympicBonus * monopolyBonus);
+    return Math.round(baseToll * resortBonus * olympicBonus * monopolyBonus);
   };
 
   const ownsAllResorts = (playerId, targetBoard = board) => {
@@ -656,44 +1202,35 @@ function App() {
     );
   };
 
-  const hasColorMonopoly = (playerId, color) => {
-    if (!playerId || !color) return false;
-
-    const sameColorTiles = board.filter(
-      (tile) =>
-        tile.color === color &&
-        (tile.kind === "city" || tile.kind === "resort"),
-    );
-
-    return (
-      sameColorTiles.length > 1 &&
-      sameColorTiles.every((tile) => tile.owner?.id === playerId)
-    );
-  };
-
-  const getOwnedBuildableTiles = (playerId) =>
-    board.filter(
-      (tile) =>
-        (tile.kind === "city" || tile.kind === "resort") &&
-        tile.owner?.id === playerId,
-    );
-
-  const worldTravelDestinations = board.filter(
-    (tile) => tile.kind !== "worldTravel",
+  const worldTravelDestinations = useMemo(
+    () => board.filter((tile) => tile.kind !== "worldTravel"),
+    [board],
   );
-  const selectedInfoTile = board.find(
-    (tile) => tile.idx === selectedInfoTileIdx,
+  const selectedInfoTile = useMemo(
+    () => board.find((tile) => tile.idx === selectedInfoTileIdx),
+    [board, selectedInfoTileIdx],
   );
 
-  const isWorldTravelTarget = (tile) =>
-    pendingAction?.type === "worldTravel" && tile.kind !== "worldTravel";
+  const isWorldTravelTarget = useCallback(
+    (tile) =>
+      pendingAction?.type === "worldTravel" && tile.kind !== "worldTravel",
+    [pendingAction?.type],
+  );
 
-  const isOlympicTarget = (tile) =>
-    pendingAction?.type === "olympic" &&
-    (tile.kind === "city" || tile.kind === "resort") &&
-    tile.owner?.id === turn;
+  const isOlympicTarget = useCallback(
+    (tile) =>
+      pendingAction?.type === "olympic" &&
+      (tile.kind === "city" || tile.kind === "resort") &&
+      tile.owner?.id === turn,
+    [pendingAction?.type, turn],
+  );
 
-  const handleBlockClick = (tile) => {
+  const getIsSelectable = useCallback(
+    (tile) => isWorldTravelTarget(tile) || isOlympicTarget(tile),
+    [isOlympicTarget, isWorldTravelTarget],
+  );
+
+  const handleBlockClick = useCallback((tile) => {
     if (!tile) return;
 
     if (canAct && isWorldTravelTarget(tile)) {
@@ -712,7 +1249,7 @@ function App() {
       setSelectedInfoTileIdx(tile.idx);
       setIsInfoDialogOpen(true);
     }
-  };
+  }, [canAct, isOlympicTarget, isWorldTravelTarget]);
 
   const closeTileInfo = () => {
     setIsInfoDialogOpen(false);
@@ -776,6 +1313,8 @@ function App() {
     setIsRolling(!!snapshot.isRolling);
     setDice1(snapshot.dice1 || 1);
     setDice2(snapshot.dice2 || 1);
+    setLastRollId(snapshot.lastRollId || null);
+    setRollPreviewTileIdx(snapshot.rollPreviewTileIdx ?? null);
     setPendingAction(snapshot.pendingAction || null);
     setWinner(snapshot.winner || null);
     setGameStarted(!!snapshot.gameStarted);
@@ -796,6 +1335,8 @@ function App() {
     setIsRolling(false);
     setDice1(1);
     setDice2(1);
+    setLastRollId(null);
+    setRollPreviewTileIdx(null);
     setPendingAction(null);
     setSelectedDestination("");
     setSelectedOlympicCity("");
@@ -808,9 +1349,29 @@ function App() {
     if (!isHost || !command || actorId !== turn || winner || isMoving) return;
 
     switch (command.type) {
-      case "roll_dice":
-        await applyDiceRoll(actorId, command.diceValues);
+      case "roll_dice": {
+        const diceValues = command.diceValues || rollFallbackDice();
+        const rollId =
+          command.rollId ||
+          `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        let animationPromise = pendingRollAnimationsRef.current.get(rollId);
+
+        setDice1(diceValues[0]);
+        setDice2(diceValues[1]);
+        setLastRollId(rollId);
+        setRollPreviewTileIdx(
+          getRollPreviewTileIdx(playersById[actorId], diceValues),
+        );
+
+        if (!animationPromise) {
+          animationPromise = playDiceAnimation(diceValues);
+          trackRollAnimation(rollId, animationPromise);
+        }
+
+        await animationPromise;
+        await applyDiceRoll(actorId, diceValues);
         break;
+      }
       case "build_city": {
         const tile = board.find((item) => item.idx === command.tileIdx);
         if (tile) buildCity(tile, command.buildType);
@@ -826,6 +1387,21 @@ function App() {
         if (tile) acquireCity(tile);
         break;
       }
+      case "sell_buildings":
+        sellBuildings(command.tileIdxs);
+        break;
+      case "cancel_sell_buildings":
+        restoreTileActionFromSale();
+        break;
+      case "bonus_guess":
+        submitBonusGuess(actorId, command.selectedSide);
+        break;
+      case "bonus_collect":
+        collectBonusPrize(actorId);
+        break;
+      case "bonus_continue":
+        continueBonusRound();
+        break;
       case "resolve_golden_key":
         await resolveGoldenKeyMovement();
         break;
@@ -865,6 +1441,8 @@ function App() {
       isRolling,
       dice1,
       dice2,
+      lastRollId,
+      rollPreviewTileIdx,
       pendingAction,
       winner,
     }),
@@ -876,6 +1454,8 @@ function App() {
       isAction,
       isMoving,
       isRolling,
+      lastRollId,
+      rollPreviewTileIdx,
       pendingAction,
       players,
       turn,
@@ -884,6 +1464,17 @@ function App() {
   );
 
   const handledEventIdRef = useRef(null);
+  const displayedRollIdRef = useRef(null);
+  const snapshotSyncTimeoutRef = useRef(null);
+
+  useEffect(
+    () => () => {
+      if (snapshotSyncTimeoutRef.current) {
+        window.clearTimeout(snapshotSyncTimeoutRef.current);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!lastEvent || handledEventIdRef.current === lastEvent.eventId) return;
@@ -962,12 +1553,60 @@ function App() {
       `${HOST_SNAPSHOT_KEY_PREFIX}${room.code}`,
       JSON.stringify(snapshot),
     );
-    sendGameSnapshot(snapshot);
-  }, [gameStarted, isHost, players.length, room?.code, sendGameSnapshot, snapshot]);
+
+    if (snapshotSyncTimeoutRef.current) {
+      window.clearTimeout(snapshotSyncTimeoutRef.current);
+    }
+
+    snapshotSyncTimeoutRef.current = window.setTimeout(
+      () => {
+        sendGameSnapshot(snapshot);
+        snapshotSyncTimeoutRef.current = null;
+      },
+      isMoving || isRolling ? 160 : 0,
+    );
+
+    return () => {
+      if (snapshotSyncTimeoutRef.current) {
+        window.clearTimeout(snapshotSyncTimeoutRef.current);
+        snapshotSyncTimeoutRef.current = null;
+      }
+    };
+  }, [
+    gameStarted,
+    isHost,
+    isMoving,
+    isRolling,
+    players.length,
+    room?.code,
+    sendGameSnapshot,
+    snapshot,
+  ]);
+
+  useEffect(() => {
+    if (
+      isHost ||
+      !diceReady ||
+      !gameStarted ||
+      !lastRollId ||
+      displayedRollIdRef.current === lastRollId
+    ) {
+      return;
+    }
+
+    displayedRollIdRef.current = lastRollId;
+    diceRollerRef.current?.show?.([dice1, dice2]);
+  }, [dice1, dice2, diceReady, gameStarted, isHost, lastRollId]);
 
   const activeTile = activePlayer ? board[activePlayer.position] : null;
   const isDiceDisabled =
     !canAct || !!winner || isAction || isMoving || isRolling || !diceReady;
+  const sellableBuildings =
+    pendingAction?.type === "sellBuildings"
+      ? getOwnedBuildableTiles(turn).filter(
+          (tile) => tile.idx !== pendingAction.tileIdx,
+        )
+      : [];
   const selectionGuide =
     pendingAction?.type === "worldTravel"
       ? {
@@ -1046,6 +1685,8 @@ function App() {
         height: "var(--app-height)",
         minWidth: 0,
         minHeight: "var(--app-height)",
+        maxWidth: "100vw",
+        maxHeight: "var(--app-height)",
         overflow: "hidden",
         WebkitOverflowScrolling: "auto",
         position: "relative",
@@ -1077,28 +1718,34 @@ function App() {
             rank={player.id === localPlayerId ? "나" : `P${index + 1}`}
             anchor={index % 2 === 0 ? "left" : "right"}
             isActive={turn === player.id}
-            sx={getPlayerPanelSx(index, players.length)}
+            sx={playerPanelStyles[index]}
           />
         ))}
-        <Stack
-          sx={{
-            position: "absolute",
-            top: { xs: 8, sm: 10, md: 16, lg: 22 },
-            left: "50%",
-            transform: "translateX(-50%)",
-            alignItems: "center",
-          }}
-        >
-          {selectionGuide && (
-            <ActionGuide
-              title={selectionGuide.title}
-              description={selectionGuide.description}
-              count={selectionGuide.count}
-              onSkip={() => requestCommand({ type: "end_turn" })}
-              disabled={!canAct}
-            />
-          )}
-        </Stack>
+      </Stack>
+
+      <Stack
+        sx={{
+          position: "absolute",
+          top: { xs: 8, sm: 10, md: 16, lg: 22 },
+          left: "50%",
+          transform: "translateX(-50%)",
+          alignItems: "center",
+          pointerEvents: "none",
+          zIndex: 70,
+          "& > *": {
+            pointerEvents: "auto",
+          },
+        }}
+      >
+        {selectionGuide && (
+          <ActionGuide
+            title={selectionGuide.title}
+            description={selectionGuide.description}
+            count={selectionGuide.count}
+            onSkip={() => requestCommand({ type: "end_turn" })}
+            disabled={!canAct}
+          />
+        )}
       </Stack>
 
       <Box
@@ -1126,7 +1773,7 @@ function App() {
             boxShadow:
               "0 12px 22px rgba(70,132,186,0.22), inset 0 1px 0 rgba(255,255,255,0.94)",
             width: isToolDrawerOpen
-              ? { xs: 78, sm: 86, md: 94 }
+              ? { xs: 116, sm: 128, md: 140 }
               : { xs: 40, sm: 44, md: 48 },
             overflow: "hidden",
             transformOrigin: "top right",
@@ -1157,6 +1804,28 @@ function App() {
             }}
           >
             {isFullscreen ? <FullscreenExitIcon /> : <FullscreenIcon />}
+          </IconButton>
+
+          <IconButton
+            aria-label="다시하기"
+            title={
+              isHost
+                ? isMoving || isRolling
+                  ? "이동 또는 주사위 진행 중"
+                  : "다시하기"
+                : "방장만 다시하기 가능"
+            }
+            onClick={handleRestartGame}
+            disabled={!isHost || isMoving || isRolling}
+            sx={{
+              ...toolIconButtonSx,
+              opacity: isToolDrawerOpen ? 1 : 0,
+              pointerEvents: isToolDrawerOpen ? "auto" : "none",
+              transform: isToolDrawerOpen ? "scale(1)" : "scale(0.82)",
+              transition: "opacity 120ms ease, transform 120ms ease",
+            }}
+          >
+            <RestartAltIcon />
           </IconButton>
         </Box>
       </Box>
@@ -1208,6 +1877,18 @@ function App() {
             onAcquire={(tile) =>
               requestCommand({ type: "acquire_city", tileIdx: tile.idx })
             }
+            sellableBuildings={sellableBuildings}
+            onSellBuildings={(tileIdxs) =>
+              requestCommand({ type: "sell_buildings", tileIdxs })
+            }
+            onCancelSellBuildings={() =>
+              requestCommand({ type: "cancel_sell_buildings" })
+            }
+            onBonusGuess={(selectedSide) =>
+              requestCommand({ type: "bonus_guess", selectedSide })
+            }
+            onBonusCollect={() => requestCommand({ type: "bonus_collect" })}
+            onBonusContinue={() => requestCommand({ type: "bonus_continue" })}
             onEndTurn={() => requestCommand({ type: "end_turn" })}
             getToll={getToll}
             hasColorMonopoly={hasColorMonopoly}
@@ -1254,7 +1935,7 @@ function App() {
             transformOrigin: "center",
             transformStyle: "preserve-3d",
             backfaceVisibility: "hidden",
-            willChange: "transform",
+            willChange: "auto",
             filter: "drop-shadow(0 38px 30px rgba(88,150,207,0.28))",
           }}
         >
@@ -1297,12 +1978,12 @@ function App() {
 
           <BuildMap
             board={board}
-            players={players}
+            playersByPosition={playersByPosition}
             tokenLayer={tokenLayer}
+            hasColorMonopoly={hasColorMonopoly}
+            rollPreviewTileIdx={rollPreviewTileIdx}
             onBlockClick={handleBlockClick}
-            getIsSelectable={(tile) =>
-              isWorldTravelTarget(tile) || isOlympicTarget(tile)
-            }
+            getIsSelectable={getIsSelectable}
             selectedTileIdx={
               pendingAction?.type === "worldTravel"
                 ? Number(selectedDestination)
@@ -1322,8 +2003,9 @@ function App() {
               justifyItems: "center",
               alignContent: "end",
               gap: 1,
-              width: 500,
-              minHeight: 410,
+              width: 810,
+              minHeight: 630,
+              pointerEvents: "none",
               zIndex: 4,
             }}
           >
@@ -1332,6 +2014,7 @@ function App() {
               values={[dice1, dice2]}
               isRolling={isRolling}
               disabled={!!winner || isAction || isMoving}
+              rollId={lastRollId}
               onReady={setDiceReady}
               onError={handleDiceError}
             />
@@ -1340,31 +2023,10 @@ function App() {
               onClick={rollDice}
               disabled={isDiceDisabled}
               title={diceError ? "Dice fallback active" : "ROLL"}
-              sx={rollButtonSx}
+              sx={{ ...rollButtonSx, pointerEvents: "auto" }}
             >
               {"ROLL"}
             </Button>
-            <Box
-              sx={{
-                px: 2,
-                py: 0.75,
-                minWidth: 120,
-                color: "#28608d",
-                fontSize: 18,
-                fontWeight: 900,
-                textAlign: "center",
-                borderRadius: "10px",
-                background:
-                  "linear-gradient(180deg, rgba(255,255,255,0.72), rgba(223,247,255,0.42))",
-                border: "1px solid rgba(255,255,255,0.78)",
-                backdropFilter: "blur(12px) saturate(1.25)",
-                boxShadow:
-                  "0 12px 18px rgba(84,144,194,0.2), inset 0 1px 0 rgba(255,255,255,0.86)",
-                zIndex: 2,
-              }}
-            >
-              {dice1 + dice2}
-            </Box>
           </Box>
         </Box>
 
@@ -1412,6 +2074,11 @@ function App() {
             {!!activePlayer?.tollPasses && (
               <Typography variant="caption">
                 통행료 면제권 {activePlayer.tollPasses}장
+              </Typography>
+            )}
+            {!!activePlayer?.islandPasses && (
+              <Typography variant="caption">
+                무인도 탈출권 {activePlayer.islandPasses}장
               </Typography>
             )}
           </Stack>
@@ -1635,7 +2302,8 @@ const SetupScreen = ({
   onResetSession,
   isSyncing,
 }) => {
-  const connectedSlots = room?.players?.filter((player) => player.connected) || [];
+  const connectedSlots =
+    room?.players?.filter((player) => player.connected) || [];
   const isRoomReady =
     !!room &&
     room.players.length === room.maxPlayers &&
@@ -1669,15 +2337,15 @@ const SetupScreen = ({
             </Typography>
           </Box>
           <Chip
-            label={
-              connectionStatus === "connected" ? "서버 연결" : "서버 대기"
-            }
+            label={connectionStatus === "connected" ? "서버 연결" : "서버 대기"}
             color={connectionStatus === "connected" ? "success" : "warning"}
             sx={{ fontWeight: 900 }}
           />
         </Stack>
 
-        {multiplayerError && <Alert severity="warning">{multiplayerError}</Alert>}
+        {multiplayerError && (
+          <Alert severity="warning">{multiplayerError}</Alert>
+        )}
 
         {isSyncing && (
           <Alert severity="info">
@@ -1761,10 +2429,10 @@ const SetupScreen = ({
                   roomCode: event.target.value
                     .toUpperCase()
                     .replace(/[^A-Z0-9]/g, "")
-                    .slice(0, 6),
+                    .slice(0, 4),
                 }))
               }
-              inputProps={{ maxLength: 6 }}
+              inputProps={{ maxLength: 4 }}
               required
             />
             <TextField
@@ -2088,6 +2756,10 @@ const TileInfoCard = ({ tile, getToll, hasColorMonopoly, fallback }) => {
   const acquisitionCost =
     tile.owner && tile.kind !== "resort" ? toll + ownerCost.build * 2 : null;
   const isMonopoly = hasColorMonopoly(tile.owner?.id, tile.color);
+  const resortTollMultiplier =
+    tile.kind === "resort"
+      ? tile.resortTollMultiplier || RESORT_BASE_TOLL_MULTIPLIER
+      : RESORT_BASE_TOLL_MULTIPLIER;
 
   return (
     <Stack
@@ -2166,6 +2838,9 @@ const TileInfoCard = ({ tile, getToll, hasColorMonopoly, fallback }) => {
         <Typography>
           현재 통행료: {tile.owner ? NumberToMoney(toll) : "없음"}
         </Typography>
+        {resortTollMultiplier > RESORT_BASE_TOLL_MULTIPLIER && (
+          <Typography>휴양지 성장: 통행료 {resortTollMultiplier}배</Typography>
+        )}
         {tile.olympicHost && <Typography>올림픽 개최지: 통행료 2배</Typography>}
         {isMonopoly && <Typography>독점 보너스: 통행료 2배</Typography>}
         {acquisitionCost && (
@@ -2186,6 +2861,12 @@ const TileActionPanel = ({
   onBuild,
   onPayToll,
   onAcquire,
+  sellableBuildings = [],
+  onSellBuildings,
+  onCancelSellBuildings,
+  onBonusGuess,
+  onBonusCollect,
+  onBonusContinue,
   onEndTurn,
   getToll,
   hasColorMonopoly,
@@ -2193,10 +2874,15 @@ const TileActionPanel = ({
   canAct,
 }) => {
   const [costOption, setCostOption] = useState("");
+  const [selectedSaleTileIdxs, setSelectedSaleTileIdxs] = useState([]);
 
   useEffect(() => {
-    setCostOption("");
-  }, [tile?.idx, action?.type]);
+    setCostOption(action?.type === "tile" ? action.defaultBuildType || "" : "");
+  }, [tile?.idx, action?.type, action?.defaultBuildType]);
+
+  useEffect(() => {
+    setSelectedSaleTileIdxs([]);
+  }, [action?.type, action?.tileIdx, action?.requiredAmount]);
 
   if (winner || !isAction || !action || !player) return null;
 
@@ -2212,7 +2898,202 @@ const TileActionPanel = ({
     );
   }
 
-  if (action.type !== "tile") return null;
+  if (action.type === "bonusGame") {
+    const isWin = action.result === "win";
+    const canContinue = action.round < BONUS_MAX_ROUND;
+    const selectedLabel = COIN_SIDE_LABELS[action.selectedSide];
+    const coinLabel = COIN_SIDE_LABELS[action.coinSide];
+
+    return (
+      <Stack sx={{ ...actionPanelSx, width: 500 }}>
+        <Typography variant="h6">보너스 게임</Typography>
+        <Stack direction="row" gap={1} justifyContent="center" flexWrap="wrap">
+          <Chip
+            label={`${action.round}/${BONUS_MAX_ROUND} 라운드`}
+            color="primary"
+            sx={{ fontWeight: 900 }}
+          />
+          <Chip
+            label={`현재 상금 ${NumberToMoney(action.prize)}`}
+            color="success"
+            sx={{ fontWeight: 900 }}
+          />
+        </Stack>
+
+        {isWin ? (
+          <>
+            <Typography fontWeight={900}>
+              성공! {selectedLabel}을 맞췄습니다.
+            </Typography>
+            <Typography color="#54708b" fontWeight={800}>
+              동전 결과: {coinLabel}
+            </Typography>
+            <Stack direction="row" gap={1} flexWrap="wrap" justifyContent="center">
+              <Button
+                variant="contained"
+                color="inherit"
+                onClick={onBonusCollect}
+                disabled={!canAct}
+              >
+                상금 받기
+              </Button>
+              {canContinue && (
+                <Button
+                  variant="contained"
+                  onClick={onBonusContinue}
+                  disabled={!canAct}
+                >
+                  2배로 한 판 더
+                </Button>
+              )}
+            </Stack>
+            {!canContinue && (
+              <Typography fontWeight={800} color="#54708b">
+                마지막 라운드입니다. 상금을 받아주세요.
+              </Typography>
+            )}
+          </>
+        ) : (
+          <>
+            <Typography fontWeight={800}>
+              동전의 앞면 또는 뒷면을 맞히세요.
+            </Typography>
+            <Typography color="#54708b" fontWeight={800}>
+              실패하면 이번 보너스 게임의 상금을 받을 수 없습니다.
+            </Typography>
+            <Stack direction="row" gap={1}>
+              <Button
+                variant="contained"
+                onClick={() => onBonusGuess("heads")}
+                disabled={!canAct}
+              >
+                앞면
+              </Button>
+              <Button
+                variant="contained"
+                color="inherit"
+                onClick={() => onBonusGuess("tails")}
+                disabled={!canAct}
+              >
+                뒷면
+              </Button>
+            </Stack>
+          </>
+        )}
+      </Stack>
+    );
+  }
+
+  if (action.type === "sellBuildings") {
+    const selectedSaleValue = sellableBuildings
+      .filter((building) => selectedSaleTileIdxs.includes(building.idx))
+      .reduce((total, building) => total + getBuildingSaleValue(building), 0);
+    const shortfall = Math.max(action.requiredAmount - player.money, 0);
+    const purchaseLabel =
+      action.purchaseType === "acquire" ? "인수" : "건물 구매";
+    const toggleSaleTile = (tileIdx) => {
+      setSelectedSaleTileIdxs((current) =>
+        current.includes(tileIdx)
+          ? current.filter((item) => item !== tileIdx)
+          : [...current, tileIdx],
+      );
+    };
+
+    return (
+      <Stack sx={{ ...actionPanelSx, width: 520 }}>
+        <Typography variant="h6">{purchaseLabel} 자금 부족</Typography>
+        <Typography fontWeight={800}>
+          부족 금액 {NumberToMoney(shortfall)}을 마련하려면 건물을 판매해야
+          합니다.
+        </Typography>
+        <Typography variant="body2" fontWeight={800} color="#54708b">
+          판매할 건물 {sellableBuildings.length}개 선택 가능
+        </Typography>
+
+        <Stack
+          gap={0.75}
+          sx={{
+            width: "100%",
+            maxHeight: 220,
+            overflowY: "auto",
+            pr: 0.5,
+          }}
+        >
+          {sellableBuildings.length ? (
+            sellableBuildings.map((building) => {
+              const saleValue = getBuildingSaleValue(building);
+              const isSelected = selectedSaleTileIdxs.includes(building.idx);
+              const ownerCost = building.costs?.[building.owner?.type];
+
+              return (
+                <Button
+                  key={`sale-${building.idx}`}
+                  fullWidth
+                  variant={isSelected ? "contained" : "outlined"}
+                  color={isSelected ? "primary" : "inherit"}
+                  onClick={() => toggleSaleTile(building.idx)}
+                  disabled={!canAct}
+                  sx={{
+                    justifyContent: "space-between",
+                    px: 1.25,
+                    py: 0.85,
+                    borderRadius: "12px",
+                    fontWeight: 900,
+                    textAlign: "left",
+                    gap: 1,
+                  }}
+                >
+                  <Box component="span" sx={{ minWidth: 0 }}>
+                    {building.name} {ownerCost?.label || "건물"}
+                  </Box>
+                  <Box component="span" sx={{ flexShrink: 0 }}>
+                    {NumberToMoney(saleValue)}
+                  </Box>
+                </Button>
+              );
+            })
+          ) : (
+            <Typography fontWeight={800} color="#54708b">
+              판매 가능한 건물이 없습니다.
+            </Typography>
+          )}
+        </Stack>
+
+        <Divider flexItem />
+
+        <Stack direction="row" gap={1} alignItems="center">
+          <Chip
+            label={`선택 ${selectedSaleTileIdxs.length}개`}
+            color="primary"
+            sx={{ fontWeight: 900 }}
+          />
+          <Typography fontWeight={900}>
+            판매 금액 {NumberToMoney(selectedSaleValue)}
+          </Typography>
+        </Stack>
+
+        <Stack direction="row" gap={1}>
+          <Button
+            variant="contained"
+            color="inherit"
+            onClick={onCancelSellBuildings}
+            disabled={!canAct}
+          >
+            돌아가기
+          </Button>
+          <Button
+            variant="contained"
+            onClick={() => onSellBuildings(selectedSaleTileIdxs)}
+            disabled={!canAct || !selectedSaleTileIdxs.length}
+          >
+            판매 후 계속
+          </Button>
+        </Stack>
+      </Stack>
+    );
+  }
+
+  if (action.type !== "tile" || !canAct) return null;
 
   const selectedCost = costOption ? tile.costs[costOption] : null;
   const isOpponentCity = tile.owner && tile.owner.id !== player.id;
@@ -2230,6 +3111,10 @@ const TileActionPanel = ({
         ? BUILD_ORDER.indexOf(costOption) > currentBuildIndex
         : costOption !== "landmark"));
   const isMonopoly = hasColorMonopoly(tile.owner?.id, tile.color);
+  const resortTollMultiplier =
+    isResort
+      ? tile.resortTollMultiplier || RESORT_BASE_TOLL_MULTIPLIER
+      : RESORT_BASE_TOLL_MULTIPLIER;
 
   return (
     <Stack sx={actionPanelSx}>
@@ -2246,6 +3131,11 @@ const TileActionPanel = ({
       {isOpponentCity ? (
         <>
           <Typography>{`통행료: ${NumberToMoney(getToll(tile))}`}</Typography>
+          {resortTollMultiplier > RESORT_BASE_TOLL_MULTIPLIER && (
+            <Typography color="primary" fontWeight="bold">
+              휴양지 성장: 통행료 {resortTollMultiplier}배
+            </Typography>
+          )}
           {canAcquire ? (
             <Typography>{`인수 비용: ${NumberToMoney(
               getToll(tile) + ownerCost.build * 2,
@@ -2277,7 +3167,9 @@ const TileActionPanel = ({
         <>
           {isOwnCity && (
             <Typography>
-              내 도시입니다. 더 높은 건물로 업그레이드할 수 있습니다.
+              {isResort
+                ? "내 휴양지입니다. 다시 도착할 때마다 통행료가 1배씩 오릅니다."
+                : "내 도시입니다. 더 높은 건물로 업그레이드할 수 있습니다."}
             </Typography>
           )}
           <Typography>{`가격: ${NumberToMoney(
@@ -2349,7 +3241,7 @@ const TileActionPanel = ({
                 !canAct ||
                 (!isResort &&
                   (isOpponentCity ||
-                  (!tile.owner && key === "landmark") ||
+                    (!tile.owner && key === "landmark") ||
                     (isOwnCity && optionIndex <= currentBuildIndex)));
 
               return (
@@ -2376,11 +3268,7 @@ const TileActionPanel = ({
               <Button
                 variant="contained"
                 onClick={() => onBuild(tile, costOption)}
-                disabled={
-                  !canAct ||
-                  !isSelectedBuildAllowed ||
-                  selectedCost?.build > player.money
-                }
+                disabled={!canAct || !isSelectedBuildAllowed}
               >
                 {isOwnCity ? "업그레이드" : "구매"}
               </Button>
@@ -2392,55 +3280,41 @@ const TileActionPanel = ({
   );
 };
 
-const BuildMap = ({
+const BuildMap = memo(function BuildMap({
   board,
-  players = [],
+  playersByPosition,
   tokenLayer,
+  hasColorMonopoly,
+  rollPreviewTileIdx,
   onBlockClick,
   getIsSelectable,
   selectedTileIdx,
-}) =>
-  board.map((item, index) => {
-    const sideIndex = parseInt(index / 8, 10);
-    const side = ["bottom", "left", "top", "right"][sideIndex] || "bottom";
-    const num = index % 8;
-    const isCorner = num === 0;
-    const isSideLine = side === "left" || side === "right";
-    const block = isCorner
-      ? { width: cornerBlockSize, height: cornerBlockSize }
-      : isSideLine
-        ? { width: blockHeight, height: blockWidth }
-        : { width: blockWidth, height: blockHeight };
-    const position = { top: 0, left: 0 };
+}) {
+  return board.map((item, index) => {
+    const { block, position, side } = BOARD_TILE_LAYOUT[index];
+    const tilePlayers =
+      playersByPosition?.get(index) || EMPTY_TILE_PLAYERS;
+    const tollBonuses = [];
+    const resortTollMultiplier =
+      item.kind === "resort"
+        ? item.resortTollMultiplier || RESORT_BASE_TOLL_MULTIPLIER
+        : RESORT_BASE_TOLL_MULTIPLIER;
 
-    switch (sideIndex) {
-      case 0:
-        position.top = mapHeight - block.height;
-        position.left = isCorner
-          ? mapWidth - cornerBlockSize
-          : mapWidth - cornerBlockSize - num * blockWidth;
-        break;
-      case 1:
-        position.top = isCorner
-          ? mapHeight - cornerBlockSize
-          : mapHeight - cornerBlockSize - num * blockWidth;
-        position.left = 0;
-        break;
-      case 2:
-        position.top = 0;
-        position.left = isCorner ? 0 : cornerBlockSize + (num - 1) * blockWidth;
-        break;
-      case 3:
-        position.top = isCorner ? 0 : cornerBlockSize + (num - 1) * blockWidth;
-        position.left = isCorner
-          ? mapWidth - cornerBlockSize
-          : mapWidth - blockHeight;
-        break;
-      default:
-        break;
+    if (resortTollMultiplier > RESORT_BASE_TOLL_MULTIPLIER) {
+      tollBonuses.push({
+        key: "resortGrowth",
+        label: `휴양지 ${resortTollMultiplier}배`,
+        multiplier: resortTollMultiplier,
+      });
     }
 
-    const tilePlayers = players.filter((player) => player.position === index);
+    if (item.olympicHost) {
+      tollBonuses.push({ key: "olympic", label: "올림픽 2배", multiplier: 2 });
+    }
+
+    if (item.owner && hasColorMonopoly?.(item.owner.id, item.color)) {
+      tollBonuses.push({ key: "monopoly", label: "독점 2배", multiplier: 2 });
+    }
 
     return (
       <Block
@@ -2451,9 +3325,12 @@ const BuildMap = ({
         side={side}
         players={tilePlayers}
         tokenLayer={tokenLayer}
-        onClick={onBlockClick ? () => onBlockClick(item) : undefined}
+        tollBonuses={tollBonuses.length ? tollBonuses : EMPTY_TOLL_BONUSES}
+        onClick={onBlockClick}
         isSelectable={getIsSelectable?.(item)}
         isSelected={selectedTileIdx === item.idx}
+        isRollPreview={rollPreviewTileIdx === item.idx}
       />
     );
   });
+});

@@ -1,3 +1,5 @@
+import { memo } from "react";
+
 import { Avatar, Box, Stack } from "@mui/material";
 import { alpha, useTheme } from "@mui/material/styles";
 import { NumberToMoney } from "@/util/numberToMoney";
@@ -124,4 +126,4 @@ const User = ({ data, rank, anchor = "left", isActive = false, sx }) => {
   );
 };
 
-export default User;
+export default memo(User);
