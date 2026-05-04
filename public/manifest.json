@@ -1,13 +1,6 @@
 {
   "short_name": "하니 비니 월드",
   "name": "하니 비니 월드",
-  "icons": [
-    {
-      "src": "myicon.png",
-      "sizes": "192x192",
-      "type": "image/png"
-    }
-  ],
   "start_url": "/index.html",
   "display": "standalone",
   "orientation": "landscape"

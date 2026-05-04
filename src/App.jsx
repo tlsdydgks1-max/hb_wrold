@@ -1,30 +1,45 @@
-﻿import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import "./App.css";
-import Block from "@/components/block";
+import ActionGuide from "@/components/ActionGuide";
+import BuildMap from "@/components/BuildMap";
 import DiceRoller from "@/components/Dice";
-import User from "@/components/user";
+import SetupScreen from "@/components/SetupScreen";
+import TileActionPanel from "@/components/TileActionPanel";
+import TileInfoCard from "@/components/TileInfoCard";
+import User from "@/components/User";
 import { city as initialCity } from "@/data/city";
 import { goldenKeyCards } from "@/data/goldenKeyCards";
+import {
+  APP_FULLSCREEN_CLASS,
+  BOARD_SIZE,
+  BONUS_BASE_PRIZE,
+  BONUS_MAX_ROUND,
+  BUILD_ORDER,
+  COIN_SIDE_LABELS,
+  EMPTY_BOARD_TILES,
+  HOST_SNAPSHOT_KEY_PREFIX,
+  MONOPOLY_TOLL_MULTIPLIER,
+  RESORT_BASE_TOLL_MULTIPLIER,
+  SALARY,
+  getBuildingSaleValue,
+  mapHeight,
+  mapWidth,
+} from "@/game/constants";
+import { getPlayerPanelSx } from "@/game/layout";
 import { useMultiplayer } from "@/hooks/useMultiplayer";
+import { dialogLayerSx, rollButtonSx, toolIconButtonSx } from "@/styles/gameSx";
 import { NumberToMoney } from "@/util/numberToMoney";
 
 import {
-  Alert,
   Box,
   Button,
-  Chip,
-  Divider,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
   IconButton,
-  MenuItem,
   Stack,
-  TextField,
-  ToggleButton,
-  ToggleButtonGroup,
   Typography,
 } from "@mui/material";
 import FullscreenIcon from "@mui/icons-material/Fullscreen";
@@ -35,76 +50,6 @@ import RestartAltIcon from "@mui/icons-material/RestartAlt";
 
 import User1 from "@/assets/User1.jpg";
 import User2 from "@/assets/User2.jpg";
-
-const blockWidth = 82;
-const blockHeight = 106;
-const cornerBlockSize = 106;
-const mapWidth = cornerBlockSize * 2 + blockWidth * 7;
-const mapHeight = cornerBlockSize * 2 + blockWidth * 7;
-const SALARY = 300000;
-const BOARD_SIZE = 32;
-const BUILD_ORDER = ["land", "villa", "building", "hotel", "landmark"];
-const MONOPOLY_TOLL_MULTIPLIER = 2;
-const RESORT_BASE_TOLL_MULTIPLIER = 1;
-const HOST_SNAPSHOT_KEY_PREFIX = "hb_world.hostGameState:";
-const APP_FULLSCREEN_CLASS = "hb-app-fullscreen";
-const BONUS_BASE_PRIZE = 100000;
-const BONUS_MAX_ROUND = 5;
-const COIN_SIDE_LABELS = {
-  heads: "앞면",
-  tails: "뒷면",
-};
-const EMPTY_TILE_PLAYERS = Object.freeze([]);
-const EMPTY_TOLL_BONUSES = Object.freeze([]);
-const EMPTY_BOARD_TILES = Object.freeze([]);
-
-const BOARD_TILE_LAYOUT = Array.from({ length: BOARD_SIZE }, (_, index) => {
-  const sideIndex = Math.trunc(index / 8);
-  const side = ["bottom", "left", "top", "right"][sideIndex] || "bottom";
-  const num = index % 8;
-  const isCorner = num === 0;
-  const isSideLine = side === "left" || side === "right";
-  const block = isCorner
-    ? { width: cornerBlockSize, height: cornerBlockSize }
-    : isSideLine
-      ? { width: blockHeight, height: blockWidth }
-      : { width: blockWidth, height: blockHeight };
-  const position = { top: 0, left: 0 };
-
-  switch (sideIndex) {
-    case 0:
-      position.top = mapHeight - block.height;
-      position.left = isCorner
-        ? mapWidth - cornerBlockSize
-        : mapWidth - cornerBlockSize - num * blockWidth;
-      break;
-    case 1:
-      position.top = isCorner
-        ? mapHeight - cornerBlockSize
-        : mapHeight - cornerBlockSize - num * blockWidth;
-      position.left = 0;
-      break;
-    case 2:
-      position.top = 0;
-      position.left = isCorner ? 0 : cornerBlockSize + (num - 1) * blockWidth;
-      break;
-    case 3:
-      position.top = isCorner ? 0 : cornerBlockSize + (num - 1) * blockWidth;
-      position.left = isCorner
-        ? mapWidth - cornerBlockSize
-        : mapWidth - blockHeight;
-      break;
-    default:
-      break;
-  }
-
-  return { block, position, side };
-});
-
-const getBuildingSaleValue = (tile) =>
-  tile?.owner?.type
-    ? Math.round((tile.costs?.[tile.owner.type]?.build || 0) * 0.8)
-    : 0;
 
 const PLAYER_PRESETS = [
   {
@@ -138,6 +83,187 @@ const cloneBoard = () =>
         )
       : undefined,
   }));
+
+const INITIAL_TILES_BY_IDX = new Map(
+  initialCity.map((tile) => [tile.idx, tile]),
+);
+
+const cloneCosts = (costs) =>
+  costs
+    ? Object.fromEntries(
+        Object.entries(costs).map(([key, cost]) => [key, { ...cost }]),
+      )
+    : undefined;
+
+const areCostMapsEqual = (firstCosts, secondCosts) => {
+  if (firstCosts === secondCosts) return true;
+  if (!firstCosts || !secondCosts) return !firstCosts && !secondCosts;
+
+  const firstKeys = Object.keys(firstCosts);
+  const secondKeys = Object.keys(secondCosts);
+  if (firstKeys.length !== secondKeys.length) return false;
+
+  return firstKeys.every((key) => {
+    const firstCost = firstCosts[key];
+    const secondCost = secondCosts[key];
+
+    return (
+      secondCost &&
+      firstCost.label === secondCost.label &&
+      firstCost.build === secondCost.build &&
+      firstCost.toll === secondCost.toll
+    );
+  });
+};
+
+const areOwnersEqual = (firstOwner, secondOwner) => {
+  if (firstOwner === secondOwner) return true;
+  if (!firstOwner || !secondOwner) return !firstOwner && !secondOwner;
+
+  return (
+    firstOwner.id === secondOwner.id &&
+    firstOwner.name === secondOwner.name &&
+    firstOwner.color === secondOwner.color &&
+    firstOwner.type === secondOwner.type
+  );
+};
+
+const areTilesEqual = (firstTile, secondTile) =>
+  firstTile === secondTile ||
+  (Boolean(firstTile) &&
+    Boolean(secondTile) &&
+    firstTile.idx === secondTile.idx &&
+    firstTile.name === secondTile.name &&
+    firstTile.country === secondTile.country &&
+    firstTile.kind === secondTile.kind &&
+    firstTile.color === secondTile.color &&
+    Boolean(firstTile.olympicHost) === Boolean(secondTile.olympicHost) &&
+    (firstTile.resortTollMultiplier || RESORT_BASE_TOLL_MULTIPLIER) ===
+      (secondTile.resortTollMultiplier || RESORT_BASE_TOLL_MULTIPLIER) &&
+    areOwnersEqual(firstTile.owner, secondTile.owner) &&
+    areCostMapsEqual(firstTile.costs, secondTile.costs));
+
+const createBoardTileFromSnapshot = (snapshotTile = {}, index, previousTile) => {
+  const baseTile =
+    INITIAL_TILES_BY_IDX.get(snapshotTile.idx) || initialCity[index] || {};
+  const costsSource = snapshotTile.costs || baseTile.costs;
+  const nextCosts =
+    previousTile?.costs && areCostMapsEqual(previousTile.costs, costsSource)
+      ? previousTile.costs
+      : cloneCosts(costsSource);
+
+  return {
+    ...baseTile,
+    ...snapshotTile,
+    costs: nextCosts,
+    olympicHost: Boolean(snapshotTile.olympicHost),
+    ...(snapshotTile.resortTollMultiplier
+      ? { resortTollMultiplier: snapshotTile.resortTollMultiplier }
+      : {}),
+  };
+};
+
+const mergeBoardSnapshot = (currentBoard, snapshotBoard) => {
+  const sourceBoard = Array.isArray(snapshotBoard) ? snapshotBoard : cloneBoard();
+  const previousTilesByIdx = new Map(
+    currentBoard.map((tile) => [tile.idx, tile]),
+  );
+  let didChange = currentBoard.length !== sourceBoard.length;
+
+  const nextBoard = sourceBoard.map((snapshotTile, index) => {
+    const previousTile =
+      previousTilesByIdx.get(snapshotTile.idx) || currentBoard[index];
+    const nextTile = createBoardTileFromSnapshot(
+      snapshotTile,
+      index,
+      previousTile,
+    );
+
+    if (previousTile && areTilesEqual(previousTile, nextTile)) {
+      return previousTile;
+    }
+
+    didChange = true;
+    return nextTile;
+  });
+
+  return didChange ? nextBoard : currentBoard;
+};
+
+const createBoardSnapshot = (targetBoard) =>
+  targetBoard.map((tile) => ({
+    idx: tile.idx,
+    ...(tile.owner ? { owner: tile.owner } : {}),
+    ...(tile.olympicHost ? { olympicHost: true } : {}),
+    ...(tile.kind === "resort" &&
+    (tile.resortTollMultiplier || RESORT_BASE_TOLL_MULTIPLIER) >
+      RESORT_BASE_TOLL_MULTIPLIER
+      ? { resortTollMultiplier: tile.resortTollMultiplier }
+      : {}),
+  }));
+
+const arePlayerCitiesEqual = (firstCities = [], secondCities = []) =>
+  firstCities.length === secondCities.length &&
+  firstCities.every((firstCity, index) => {
+    const secondCity = secondCities[index];
+
+    return (
+      secondCity &&
+      firstCity.idx === secondCity.idx &&
+      firstCity.name === secondCity.name &&
+      firstCity.type === secondCity.type
+    );
+  });
+
+const arePlayersEqual = (firstPlayer, secondPlayer) =>
+  firstPlayer === secondPlayer ||
+  (Boolean(firstPlayer) &&
+    Boolean(secondPlayer) &&
+    firstPlayer.id === secondPlayer.id &&
+    firstPlayer.name === secondPlayer.name &&
+    firstPlayer.img === secondPlayer.img &&
+    firstPlayer.color === secondPlayer.color &&
+    firstPlayer.tokenLabel === secondPlayer.tokenLabel &&
+    firstPlayer.money === secondPlayer.money &&
+    firstPlayer.position === secondPlayer.position &&
+    firstPlayer.stop === secondPlayer.stop &&
+    firstPlayer.tollPasses === secondPlayer.tollPasses &&
+    firstPlayer.islandPasses === secondPlayer.islandPasses &&
+    firstPlayer.connected === secondPlayer.connected &&
+    arePlayerCitiesEqual(firstPlayer.city, secondPlayer.city));
+
+const mergeSnapshotPlayers = (
+  currentPlayers,
+  snapshotPlayers = [],
+  roomPlayers = [],
+) => {
+  const nextPlayers = normalizeSnapshotPlayers(snapshotPlayers, roomPlayers);
+  const previousPlayersById = new Map(
+    currentPlayers.map((player) => [player.id, player]),
+  );
+  let didChange = currentPlayers.length !== nextPlayers.length;
+
+  const mergedPlayers = nextPlayers.map((nextPlayer, index) => {
+    const previousPlayer =
+      previousPlayersById.get(nextPlayer.id) || currentPlayers[index];
+
+    if (previousPlayer && arePlayersEqual(previousPlayer, nextPlayer)) {
+      return previousPlayer;
+    }
+
+    didChange = true;
+    return {
+      ...nextPlayer,
+      city:
+        previousPlayer &&
+        arePlayerCitiesEqual(previousPlayer.city, nextPlayer.city)
+          ? previousPlayer.city
+          : nextPlayer.city,
+    };
+  });
+
+  return didChange ? mergedPlayers : currentPlayers;
+};
 
 const normalizePosition = (position) =>
   ((position % BOARD_SIZE) + BOARD_SIZE) % BOARD_SIZE;
@@ -1303,9 +1429,15 @@ function App() {
   const applySnapshot = (snapshot) => {
     if (!snapshot) return;
 
-    setBoard(snapshot.board || cloneBoard());
-    setPlayers(
-      normalizeSnapshotPlayers(snapshot.players || [], room?.players || []),
+    setBoard((currentBoard) =>
+      mergeBoardSnapshot(currentBoard, snapshot.board),
+    );
+    setPlayers((currentPlayers) =>
+      mergeSnapshotPlayers(
+        currentPlayers,
+        snapshot.players || [],
+        room?.players || [],
+      ),
     );
     setTurn(snapshot.turn || "");
     setIsAction(!!snapshot.isAction);
@@ -1430,10 +1562,11 @@ function App() {
     sendPlayerCommand(command);
   };
 
+  const boardSnapshot = useMemo(() => createBoardSnapshot(board), [board]);
   const snapshot = useMemo(
     () => ({
       gameStarted,
-      board,
+      board: boardSnapshot,
       players,
       turn,
       isAction,
@@ -1447,7 +1580,7 @@ function App() {
       winner,
     }),
     [
-      board,
+      boardSnapshot,
       dice1,
       dice2,
       gameStarted,
@@ -1533,17 +1666,26 @@ function App() {
   useEffect(() => {
     if (!gameStarted || !room?.players?.length) return;
 
-    setPlayers((currentPlayers) =>
-      currentPlayers.map((player) => {
+    setPlayers((currentPlayers) => {
+      let didChange = false;
+      const nextPlayers = currentPlayers.map((player) => {
         const roomPlayer = room.players.find(
           (candidate) => candidate.playerId === player.id,
         );
+        const connected = roomPlayer
+          ? roomPlayer.connected !== false
+          : player.connected;
 
-        return roomPlayer
-          ? { ...player, connected: roomPlayer.connected !== false }
-          : player;
-      }),
-    );
+        if (player.connected === connected) {
+          return player;
+        }
+
+        didChange = true;
+        return { ...player, connected };
+      });
+
+      return didChange ? nextPlayers : currentPlayers;
+    });
   }, [gameStarted, room?.players]);
 
   useEffect(() => {
@@ -2249,1088 +2391,3 @@ function App() {
 
 export default App;
 
-const getPlayerPanelSx = (index, count) => {
-  const inset = { xs: 8, sm: 10, md: 14, lg: 18 };
-  const positions =
-    count <= 2
-      ? [
-          { right: inset, bottom: inset },
-          { left: inset, top: inset },
-        ]
-      : [
-          { right: inset, bottom: inset },
-          { left: inset, top: inset },
-          { right: inset, top: { xs: 58, sm: 62, md: 70, lg: 78 } },
-          { left: inset, bottom: inset },
-        ];
-
-  return {
-    position: "absolute",
-    ...(positions[index] || positions[0]),
-  };
-};
-
-const setupCardSx = {
-  width: 520,
-  maxWidth: "calc(100vw - 32px)",
-  p: { xs: 2, sm: 3 },
-  gap: 2,
-  color: "#10395d",
-  borderRadius: "22px",
-  background:
-    "linear-gradient(180deg, rgba(255,255,255,0.96), rgba(227,249,255,0.9))",
-  border: "1px solid rgba(255,255,255,0.92)",
-  boxShadow:
-    "0 18px 40px rgba(64,128,178,0.24), inset 0 1px 0 rgba(255,255,255,0.95)",
-};
-
-const SetupScreen = ({
-  view,
-  setView,
-  connectionStatus,
-  room,
-  isHost,
-  localPlayerId,
-  multiplayerError,
-  createForm,
-  setCreateForm,
-  joinForm,
-  setJoinForm,
-  onCreateSubmit,
-  onJoinSubmit,
-  onStartGame,
-  onResetSession,
-  isSyncing,
-}) => {
-  const connectedSlots =
-    room?.players?.filter((player) => player.connected) || [];
-  const isRoomReady =
-    !!room &&
-    room.players.length === room.maxPlayers &&
-    connectedSlots.length === room.maxPlayers;
-  const slots = Array.from({ length: room?.maxPlayers || 0 }, (_, index) =>
-    room?.players?.find((player) => player.slot === index),
-  );
-
-  return (
-    <Stack
-      className="game-stage"
-      alignItems="center"
-      justifyContent="center"
-      sx={{
-        width: "100%",
-        minHeight: "var(--app-height)",
-        px: 2,
-        background: "transparent",
-        fontFamily:
-          "'Pretendard', 'Noto Sans KR', 'Malgun Gothic', Arial, sans-serif",
-      }}
-    >
-      <Stack sx={setupCardSx}>
-        <Stack direction="row" justifyContent="space-between" gap={1}>
-          <Box>
-            <Typography variant="h4" fontWeight={950} color="#102f4e">
-              HB World
-            </Typography>
-            <Typography fontWeight={800} color="#54708b">
-              WebSocket 멀티플레이
-            </Typography>
-          </Box>
-          <Chip
-            label={connectionStatus === "connected" ? "서버 연결" : "서버 대기"}
-            color={connectionStatus === "connected" ? "success" : "warning"}
-            sx={{ fontWeight: 900 }}
-          />
-        </Stack>
-
-        {multiplayerError && (
-          <Alert severity="warning">{multiplayerError}</Alert>
-        )}
-
-        {isSyncing && (
-          <Alert severity="info">
-            방장 브라우저에서 게임 상태를 동기화하는 중입니다.
-          </Alert>
-        )}
-
-        {view === "landing" && !room && (
-          <Stack direction={{ xs: "column", sm: "row" }} gap={1.5}>
-            <Button
-              fullWidth
-              variant="contained"
-              size="large"
-              onClick={() => setView("create")}
-              disabled={connectionStatus !== "connected"}
-            >
-              방 만들기
-            </Button>
-            <Button
-              fullWidth
-              variant="outlined"
-              size="large"
-              onClick={() => setView("join")}
-              disabled={connectionStatus !== "connected"}
-            >
-              참여하기
-            </Button>
-          </Stack>
-        )}
-
-        {view === "create" && !room && (
-          <Stack component="form" gap={1.5} onSubmit={onCreateSubmit}>
-            <TextField
-              label="방장 이름"
-              value={createForm.name}
-              onChange={(event) =>
-                setCreateForm((current) => ({
-                  ...current,
-                  name: event.target.value,
-                }))
-              }
-              inputProps={{ maxLength: 12 }}
-              required
-            />
-            <TextField
-              select
-              label="플레이 인원"
-              value={createForm.maxPlayers}
-              onChange={(event) =>
-                setCreateForm((current) => ({
-                  ...current,
-                  maxPlayers: Number(event.target.value),
-                }))
-              }
-            >
-              {[2, 3, 4].map((count) => (
-                <MenuItem key={count} value={count}>
-                  {count}명
-                </MenuItem>
-              ))}
-            </TextField>
-            <Stack direction="row" gap={1}>
-              <Button color="inherit" onClick={() => setView("landing")}>
-                뒤로
-              </Button>
-              <Button type="submit" variant="contained" sx={{ flex: 1 }}>
-                방 만들기
-              </Button>
-            </Stack>
-          </Stack>
-        )}
-
-        {view === "join" && !room && (
-          <Stack component="form" gap={1.5} onSubmit={onJoinSubmit}>
-            <TextField
-              label="접속 코드"
-              value={joinForm.roomCode}
-              onChange={(event) =>
-                setJoinForm((current) => ({
-                  ...current,
-                  roomCode: event.target.value
-                    .toUpperCase()
-                    .replace(/[^A-Z0-9]/g, "")
-                    .slice(0, 4),
-                }))
-              }
-              inputProps={{ maxLength: 4 }}
-              required
-            />
-            <TextField
-              label="플레이어 이름"
-              value={joinForm.name}
-              onChange={(event) =>
-                setJoinForm((current) => ({
-                  ...current,
-                  name: event.target.value,
-                }))
-              }
-              inputProps={{ maxLength: 12 }}
-              required
-            />
-            <Stack direction="row" gap={1}>
-              <Button color="inherit" onClick={() => setView("landing")}>
-                뒤로
-              </Button>
-              <Button type="submit" variant="contained" sx={{ flex: 1 }}>
-                참여하기
-              </Button>
-            </Stack>
-          </Stack>
-        )}
-
-        {room && room.status !== "game" && (
-          <Stack gap={1.5}>
-            <Stack
-              direction={{ xs: "column", sm: "row" }}
-              justifyContent="space-between"
-              gap={1}
-            >
-              <Box>
-                <Typography fontSize={13} fontWeight={900} color="#54708b">
-                  접속 코드
-                </Typography>
-                <Typography variant="h3" fontWeight={950} letterSpacing={0}>
-                  {room.code}
-                </Typography>
-              </Box>
-              <Chip
-                label={`${room.players.length}/${room.maxPlayers}`}
-                color={isRoomReady ? "success" : "primary"}
-                sx={{ alignSelf: "center", fontWeight: 900 }}
-              />
-            </Stack>
-
-            <Stack gap={1}>
-              {slots.map((player, index) => (
-                <Stack
-                  key={`slot-${index}`}
-                  direction="row"
-                  justifyContent="space-between"
-                  alignItems="center"
-                  sx={{
-                    px: 1.5,
-                    py: 1,
-                    borderRadius: "12px",
-                    background: "rgba(255,255,255,0.68)",
-                    border: "1px solid rgba(84,112,139,0.14)",
-                  }}
-                >
-                  <Typography fontWeight={900}>
-                    {player?.name || `빈자리 ${index + 1}`}
-                    {player?.playerId === localPlayerId ? " (나)" : ""}
-                  </Typography>
-                  <Chip
-                    size="small"
-                    label={
-                      player
-                        ? player.connected
-                          ? player.isHost
-                            ? "방장"
-                            : "접속"
-                          : "연결 끊김"
-                        : "대기"
-                    }
-                    color={
-                      player?.connected
-                        ? player.isHost
-                          ? "secondary"
-                          : "success"
-                        : "default"
-                    }
-                  />
-                </Stack>
-              ))}
-            </Stack>
-
-            <Button
-              variant="contained"
-              size="large"
-              onClick={onStartGame}
-              disabled={!isHost || !isRoomReady}
-            >
-              {isHost ? "게임 시작" : "방장이 게임을 시작합니다"}
-            </Button>
-            <Button color="inherit" onClick={onResetSession}>
-              처음 화면으로
-            </Button>
-          </Stack>
-        )}
-      </Stack>
-    </Stack>
-  );
-};
-
-const dialogLayerSx = {
-  zIndex: 2147483647,
-  "& .MuiDialog-container": {
-    position: "relative",
-    zIndex: 2147483647,
-  },
-  "& .MuiDialog-paper": {
-    position: "relative",
-    zIndex: 2147483647,
-  },
-};
-
-const actionPanelSx = {
-  gap: 1,
-  alignItems: "center",
-  width: 460,
-  maxWidth: "96vw",
-  px: 2.5,
-  py: 2,
-  color: "#10395d",
-  borderRadius: "24px",
-  fontSize: 16,
-  background:
-    "linear-gradient(180deg, rgba(255,255,255,0.98), rgba(225,247,255,0.96) 58%, rgba(226,249,242,0.94))",
-  border: "2px solid rgba(255,255,255,0.94)",
-  boxShadow:
-    "0 10px 0 rgba(91,154,196,0.68), 0 22px 34px rgba(14,59,98,0.28), inset 0 4px 0 rgba(255,255,255,0.9)",
-  textAlign: "center",
-};
-
-const rollButtonSx = {
-  width: 118,
-  height: 118,
-  minWidth: 118,
-  minHeight: 118,
-  p: 0,
-  color: "#ffffff !important",
-  fontSize: 25,
-  lineHeight: 1,
-  fontWeight: 950,
-  letterSpacing: "0 !important",
-  borderRadius: "18px !important",
-  background:
-    "linear-gradient(145deg, #ebd1ff 0%, #d9a7c9 48%, #ffd2bd 100%) !important",
-  border: "1px solid rgba(255,255,255,0.78)",
-  backdropFilter: "blur(12px) saturate(1.45)",
-  boxShadow:
-    "0 8px 20px rgba(85,145,195,0.2), inset 0 1px 0 rgba(255,255,255,0.48) !important",
-  textShadow: "0 2px 3px rgba(41,86,134,0.38)",
-  overflow: "hidden",
-  transform: "translateY(0) scale(1)",
-  transformOrigin: "center",
-  transition:
-    "transform 110ms ease, filter 140ms ease, box-shadow 140ms ease, background 140ms ease",
-  zIndex: 2,
-  "&::before": {
-    content: '""',
-    position: "absolute",
-    inset: 6,
-    borderRadius: "14px",
-    border: "1px solid rgba(255,255,255,0.42)",
-    pointerEvents: "none",
-  },
-  "&::after": {
-    content: '""',
-    position: "absolute",
-    inset: -20,
-    background:
-      "radial-gradient(circle at 50% 42%, rgba(255,255,255,0.86), rgba(255,255,255,0.18) 28%, transparent 56%)",
-    opacity: 0,
-    transform: "scale(0.42)",
-    transition: "opacity 160ms ease, transform 180ms ease",
-    pointerEvents: "none",
-  },
-  "&:hover": {
-    background:
-      "linear-gradient(145deg, #f2dcff 0%, #e2b0d2 48%, #ffddcb 100%) !important",
-    filter: "brightness(1.08) saturate(1.08)",
-    boxShadow:
-      "0 8px 20px rgba(85,145,195,0.24), inset 0 1px 0 rgba(255,255,255,0.54) !important",
-  },
-  "&:active": {
-    transform: "translateY(5px) scale(0.965)",
-    filter: "brightness(1.14) saturate(1.18)",
-    background:
-      "linear-gradient(145deg, #e0c0ff 0%, #cf8fc0 46%, #ffc1a5 100%) !important",
-    boxShadow:
-      "0 2px 8px rgba(85,145,195,0.2), inset 0 5px 14px rgba(101,67,135,0.2), inset 0 -1px 0 rgba(255,255,255,0.58) !important",
-    textShadow: "0 1px 2px rgba(41,86,134,0.5)",
-  },
-  "&:active::before": {
-    inset: 9,
-    borderColor: "rgba(255,255,255,0.58)",
-    boxShadow: "inset 0 0 22px rgba(255,255,255,0.36)",
-  },
-  "&:active::after": {
-    opacity: 1,
-    transform: "scale(1)",
-  },
-  "&.Mui-disabled": {
-    color: "rgba(255,255,255,0.58) !important",
-    background:
-      "linear-gradient(145deg, rgba(235,209,255,0.58) 0%, rgba(217,167,201,0.54) 48%, rgba(255,210,189,0.56) 100%) !important",
-    boxShadow:
-      "0 5px 14px rgba(85,145,195,0.13), inset 0 1px 0 rgba(255,255,255,0.32) !important",
-    transform: "none",
-  },
-};
-
-const toolIconButtonSx = {
-  width: { xs: 32, sm: 36, md: 40 },
-  height: { xs: 32, sm: 36, md: 40 },
-  color: "#173653",
-  borderRadius: "15px",
-  background:
-    "linear-gradient(180deg, rgba(255,255,255,0.9), rgba(224,247,255,0.76))",
-  border: "1px solid rgba(255,255,255,0.9)",
-  backdropFilter: "blur(14px) saturate(1.3)",
-  boxShadow:
-    "0 10px 18px rgba(70,132,186,0.2), inset 0 1px 0 rgba(255,255,255,0.92)",
-  "&:hover": {
-    background: "linear-gradient(180deg, #ffffff, rgba(212,244,255,0.92))",
-  },
-  "& svg": {
-    fontSize: { xs: 19, md: 22 },
-  },
-};
-
-const ActionGuide = ({ title, description, count, onSkip, disabled }) => (
-  <Stack
-    direction="row"
-    alignItems="center"
-    gap={0.8}
-    sx={{
-      width: 276,
-      maxWidth: "76vw",
-      px: 1.1,
-      py: 0.7,
-      color: "#123b5d",
-      borderRadius: "14px",
-      background:
-        "linear-gradient(180deg, rgba(255,255,255,0.9), rgba(226,249,242,0.78))",
-      border: "1px solid rgba(255,255,255,0.88)",
-      backdropFilter: "blur(14px) saturate(1.35)",
-      boxShadow:
-        "0 14px 22px rgba(64,128,178,0.22), inset 0 1px 0 rgba(255,255,255,0.9)",
-      zIndex: 3,
-    }}
-  >
-    <Box sx={{ minWidth: 0, flex: 1 }}>
-      <Typography fontSize={12} fontWeight={950} lineHeight={1.12}>
-        {title}
-      </Typography>
-      <Typography fontSize={11} fontWeight={800} lineHeight={1.18}>
-        {description}
-      </Typography>
-    </Box>
-    <Chip
-      label={`${count}곳`}
-      size="small"
-      color="primary"
-      sx={{
-        height: 20,
-        fontSize: 10,
-        fontWeight: 900,
-        "& .MuiChip-label": { px: 0.8 },
-      }}
-    />
-    <Button
-      size="small"
-      onClick={onSkip}
-      color="inherit"
-      disabled={disabled}
-      sx={{
-        minWidth: 36,
-        px: 0.75,
-        py: 0.2,
-        fontSize: 11,
-        fontWeight: 900,
-        borderRadius: "9px",
-      }}
-    >
-      패스
-    </Button>
-  </Stack>
-);
-
-const getTileKindLabel = (tile) => {
-  if (tile?.kind === "resort") return "휴양지";
-  if (tile?.kind === "city") return "도시";
-  return "특수";
-};
-
-const TileInfoCard = ({ tile, getToll, hasColorMonopoly, fallback }) => {
-  if (!tile) {
-    return (
-      <Box
-        sx={{
-          p: 2,
-          borderRadius: "16px",
-          color: "#54708b",
-          background: "rgba(255,255,255,0.72)",
-          border: "1px dashed rgba(84,112,139,0.38)",
-          textAlign: "center",
-        }}
-      >
-        {fallback && <Typography fontWeight={800}>{fallback}</Typography>}
-      </Box>
-    );
-  }
-
-  const ownerCost = tile.owner ? tile.costs[tile.owner.type] : null;
-  const toll = getToll(tile);
-  const acquisitionCost =
-    tile.owner && tile.kind !== "resort" ? toll + ownerCost.build * 2 : null;
-  const isMonopoly = hasColorMonopoly(tile.owner?.id, tile.color);
-  const resortTollMultiplier =
-    tile.kind === "resort"
-      ? tile.resortTollMultiplier || RESORT_BASE_TOLL_MULTIPLIER
-      : RESORT_BASE_TOLL_MULTIPLIER;
-
-  return (
-    <Stack
-      gap={1.25}
-      sx={{
-        p: 1.5,
-        borderRadius: "18px",
-        background:
-          "linear-gradient(180deg, rgba(255,255,255,0.94), rgba(235,249,255,0.88))",
-        border: "1px solid rgba(255,255,255,0.92)",
-        boxShadow:
-          "0 14px 26px rgba(48,104,154,0.14), inset 0 1px 0 rgba(255,255,255,0.95)",
-      }}
-    >
-      <Stack direction="row" alignItems="center" justifyContent="space-between">
-        <Box>
-          <Typography variant="h6" fontWeight={950} color="#102f4e">
-            {tile.name}
-          </Typography>
-          <Typography variant="body2" color="#58708a">
-            {tile.country || "특수 블록"}
-          </Typography>
-        </Box>
-        <Chip
-          label={getTileKindLabel(tile)}
-          sx={{
-            fontWeight: 900,
-            color: "#ffffff",
-            background: tile.color || "#2f8bd3",
-          }}
-        />
-      </Stack>
-
-      <Divider />
-
-      <Stack direction="row" flexWrap="wrap" gap={1}>
-        {Object.entries(tile.costs || {}).map(([key, cost]) => (
-          <Box
-            key={`info-${tile.idx}-${key}`}
-            sx={{
-              flex: "1 1 132px",
-              p: 1,
-              borderRadius: "14px",
-              background:
-                tile.owner?.type === key
-                  ? "linear-gradient(180deg, #d8fbff, #86dff0)"
-                  : "rgba(255,255,255,0.78)",
-              border:
-                tile.owner?.type === key
-                  ? "2px solid #37a9c2"
-                  : "1px solid rgba(82,125,165,0.16)",
-              boxShadow:
-                tile.owner?.type === key
-                  ? "0 5px 0 #187f98"
-                  : "0 4px 10px rgba(48,104,154,0.08)",
-            }}
-          >
-            <Typography fontWeight={950}>{cost.label}</Typography>
-            <Typography variant="body2">
-              가격 {NumberToMoney(cost.build)}
-            </Typography>
-            <Typography variant="body2">
-              통행료 {NumberToMoney(cost.toll)}
-            </Typography>
-          </Box>
-        ))}
-      </Stack>
-
-      <Divider />
-
-      <Stack gap={0.5}>
-        <Typography fontWeight={900}>
-          소유자: {tile.owner?.name || "없음"}
-        </Typography>
-        <Typography>현재 건물: {ownerCost?.label || "없음"}</Typography>
-        <Typography>
-          현재 통행료: {tile.owner ? NumberToMoney(toll) : "없음"}
-        </Typography>
-        {resortTollMultiplier > RESORT_BASE_TOLL_MULTIPLIER && (
-          <Typography>휴양지 성장: 통행료 {resortTollMultiplier}배</Typography>
-        )}
-        {tile.olympicHost && <Typography>올림픽 개최지: 통행료 2배</Typography>}
-        {isMonopoly && <Typography>독점 보너스: 통행료 2배</Typography>}
-        {acquisitionCost && (
-          <Typography fontWeight={900}>
-            인수 금액: {NumberToMoney(acquisitionCost)}
-          </Typography>
-        )}
-      </Stack>
-    </Stack>
-  );
-};
-
-const TileActionPanel = ({
-  player,
-  tile,
-  action,
-  isAction,
-  onBuild,
-  onPayToll,
-  onAcquire,
-  sellableBuildings = [],
-  onSellBuildings,
-  onCancelSellBuildings,
-  onBonusGuess,
-  onBonusCollect,
-  onBonusContinue,
-  onEndTurn,
-  getToll,
-  hasColorMonopoly,
-  winner,
-  canAct,
-}) => {
-  const [costOption, setCostOption] = useState("");
-  const [selectedSaleTileIdxs, setSelectedSaleTileIdxs] = useState([]);
-
-  useEffect(() => {
-    setCostOption(action?.type === "tile" ? action.defaultBuildType || "" : "");
-  }, [tile?.idx, action?.type, action?.defaultBuildType]);
-
-  useEffect(() => {
-    setSelectedSaleTileIdxs([]);
-  }, [action?.type, action?.tileIdx, action?.requiredAmount]);
-
-  if (winner || !isAction || !action || !player) return null;
-
-  if (action.type === "message") {
-    return (
-      <Stack sx={actionPanelSx}>
-        <Typography variant="h6">{action.title}</Typography>
-        <Typography>{action.description}</Typography>
-        <Button variant="contained" onClick={onEndTurn} disabled={!canAct}>
-          {canAct ? "턴 종료" : "대기 중"}
-        </Button>
-      </Stack>
-    );
-  }
-
-  if (action.type === "bonusGame") {
-    const isWin = action.result === "win";
-    const canContinue = action.round < BONUS_MAX_ROUND;
-    const selectedLabel = COIN_SIDE_LABELS[action.selectedSide];
-    const coinLabel = COIN_SIDE_LABELS[action.coinSide];
-
-    return (
-      <Stack sx={{ ...actionPanelSx, width: 500 }}>
-        <Typography variant="h6">보너스 게임</Typography>
-        <Stack direction="row" gap={1} justifyContent="center" flexWrap="wrap">
-          <Chip
-            label={`${action.round}/${BONUS_MAX_ROUND} 라운드`}
-            color="primary"
-            sx={{ fontWeight: 900 }}
-          />
-          <Chip
-            label={`현재 상금 ${NumberToMoney(action.prize)}`}
-            color="success"
-            sx={{ fontWeight: 900 }}
-          />
-        </Stack>
-
-        {isWin ? (
-          <>
-            <Typography fontWeight={900}>
-              성공! {selectedLabel}을 맞췄습니다.
-            </Typography>
-            <Typography color="#54708b" fontWeight={800}>
-              동전 결과: {coinLabel}
-            </Typography>
-            <Stack direction="row" gap={1} flexWrap="wrap" justifyContent="center">
-              <Button
-                variant="contained"
-                color="inherit"
-                onClick={onBonusCollect}
-                disabled={!canAct}
-              >
-                상금 받기
-              </Button>
-              {canContinue && (
-                <Button
-                  variant="contained"
-                  onClick={onBonusContinue}
-                  disabled={!canAct}
-                >
-                  2배로 한 판 더
-                </Button>
-              )}
-            </Stack>
-            {!canContinue && (
-              <Typography fontWeight={800} color="#54708b">
-                마지막 라운드입니다. 상금을 받아주세요.
-              </Typography>
-            )}
-          </>
-        ) : (
-          <>
-            <Typography fontWeight={800}>
-              동전의 앞면 또는 뒷면을 맞히세요.
-            </Typography>
-            <Typography color="#54708b" fontWeight={800}>
-              실패하면 이번 보너스 게임의 상금을 받을 수 없습니다.
-            </Typography>
-            <Stack direction="row" gap={1}>
-              <Button
-                variant="contained"
-                onClick={() => onBonusGuess("heads")}
-                disabled={!canAct}
-              >
-                앞면
-              </Button>
-              <Button
-                variant="contained"
-                color="inherit"
-                onClick={() => onBonusGuess("tails")}
-                disabled={!canAct}
-              >
-                뒷면
-              </Button>
-            </Stack>
-          </>
-        )}
-      </Stack>
-    );
-  }
-
-  if (action.type === "sellBuildings") {
-    const selectedSaleValue = sellableBuildings
-      .filter((building) => selectedSaleTileIdxs.includes(building.idx))
-      .reduce((total, building) => total + getBuildingSaleValue(building), 0);
-    const shortfall = Math.max(action.requiredAmount - player.money, 0);
-    const purchaseLabel =
-      action.purchaseType === "acquire" ? "인수" : "건물 구매";
-    const toggleSaleTile = (tileIdx) => {
-      setSelectedSaleTileIdxs((current) =>
-        current.includes(tileIdx)
-          ? current.filter((item) => item !== tileIdx)
-          : [...current, tileIdx],
-      );
-    };
-
-    return (
-      <Stack sx={{ ...actionPanelSx, width: 520 }}>
-        <Typography variant="h6">{purchaseLabel} 자금 부족</Typography>
-        <Typography fontWeight={800}>
-          부족 금액 {NumberToMoney(shortfall)}을 마련하려면 건물을 판매해야
-          합니다.
-        </Typography>
-        <Typography variant="body2" fontWeight={800} color="#54708b">
-          판매할 건물 {sellableBuildings.length}개 선택 가능
-        </Typography>
-
-        <Stack
-          gap={0.75}
-          sx={{
-            width: "100%",
-            maxHeight: 220,
-            overflowY: "auto",
-            pr: 0.5,
-          }}
-        >
-          {sellableBuildings.length ? (
-            sellableBuildings.map((building) => {
-              const saleValue = getBuildingSaleValue(building);
-              const isSelected = selectedSaleTileIdxs.includes(building.idx);
-              const ownerCost = building.costs?.[building.owner?.type];
-
-              return (
-                <Button
-                  key={`sale-${building.idx}`}
-                  fullWidth
-                  variant={isSelected ? "contained" : "outlined"}
-                  color={isSelected ? "primary" : "inherit"}
-                  onClick={() => toggleSaleTile(building.idx)}
-                  disabled={!canAct}
-                  sx={{
-                    justifyContent: "space-between",
-                    px: 1.25,
-                    py: 0.85,
-                    borderRadius: "12px",
-                    fontWeight: 900,
-                    textAlign: "left",
-                    gap: 1,
-                  }}
-                >
-                  <Box component="span" sx={{ minWidth: 0 }}>
-                    {building.name} {ownerCost?.label || "건물"}
-                  </Box>
-                  <Box component="span" sx={{ flexShrink: 0 }}>
-                    {NumberToMoney(saleValue)}
-                  </Box>
-                </Button>
-              );
-            })
-          ) : (
-            <Typography fontWeight={800} color="#54708b">
-              판매 가능한 건물이 없습니다.
-            </Typography>
-          )}
-        </Stack>
-
-        <Divider flexItem />
-
-        <Stack direction="row" gap={1} alignItems="center">
-          <Chip
-            label={`선택 ${selectedSaleTileIdxs.length}개`}
-            color="primary"
-            sx={{ fontWeight: 900 }}
-          />
-          <Typography fontWeight={900}>
-            판매 금액 {NumberToMoney(selectedSaleValue)}
-          </Typography>
-        </Stack>
-
-        <Stack direction="row" gap={1}>
-          <Button
-            variant="contained"
-            color="inherit"
-            onClick={onCancelSellBuildings}
-            disabled={!canAct}
-          >
-            돌아가기
-          </Button>
-          <Button
-            variant="contained"
-            onClick={() => onSellBuildings(selectedSaleTileIdxs)}
-            disabled={!canAct || !selectedSaleTileIdxs.length}
-          >
-            판매 후 계속
-          </Button>
-        </Stack>
-      </Stack>
-    );
-  }
-
-  if (action.type !== "tile" || !canAct) return null;
-
-  const selectedCost = costOption ? tile.costs[costOption] : null;
-  const isOpponentCity = tile.owner && tile.owner.id !== player.id;
-  const ownerCost = tile.owner ? tile.costs[tile.owner.type] : null;
-  const isOwnCity = tile.owner?.id === player.id;
-  const isResort = tile.kind === "resort";
-  const canAcquire = isOpponentCity && !isResort;
-  const currentBuildIndex = tile.owner
-    ? BUILD_ORDER.indexOf(tile.owner.type)
-    : -1;
-  const isSelectedBuildAllowed =
-    !!costOption &&
-    (isResort ||
-      (tile.owner
-        ? BUILD_ORDER.indexOf(costOption) > currentBuildIndex
-        : costOption !== "landmark"));
-  const isMonopoly = hasColorMonopoly(tile.owner?.id, tile.color);
-  const resortTollMultiplier =
-    isResort
-      ? tile.resortTollMultiplier || RESORT_BASE_TOLL_MULTIPLIER
-      : RESORT_BASE_TOLL_MULTIPLIER;
-
-  return (
-    <Stack sx={actionPanelSx}>
-      <Typography variant="h6">
-        {tile.name}
-        {tile.olympicHost ? " 올림픽 개최지" : ""}
-      </Typography>
-      {isMonopoly && (
-        <Typography color="primary" fontWeight="bold">
-          독점 보너스: 통행료 2배
-        </Typography>
-      )}
-
-      {isOpponentCity ? (
-        <>
-          <Typography>{`통행료: ${NumberToMoney(getToll(tile))}`}</Typography>
-          {resortTollMultiplier > RESORT_BASE_TOLL_MULTIPLIER && (
-            <Typography color="primary" fontWeight="bold">
-              휴양지 성장: 통행료 {resortTollMultiplier}배
-            </Typography>
-          )}
-          {canAcquire ? (
-            <Typography>{`인수 비용: ${NumberToMoney(
-              getToll(tile) + ownerCost.build * 2,
-            )}`}</Typography>
-          ) : (
-            <Typography>휴양지는 인수할 수 없습니다.</Typography>
-          )}
-          <Stack direction="row" gap={1}>
-            <Button
-              variant="contained"
-              color="inherit"
-              onClick={() => onPayToll(tile)}
-              disabled={!canAct}
-            >
-              통행료 지불
-            </Button>
-            {canAcquire && (
-              <Button
-                variant="contained"
-                onClick={() => onAcquire(tile)}
-                disabled={!canAct}
-              >
-                인수
-              </Button>
-            )}
-          </Stack>
-        </>
-      ) : (
-        <>
-          {isOwnCity && (
-            <Typography>
-              {isResort
-                ? "내 휴양지입니다. 다시 도착할 때마다 통행료가 1배씩 오릅니다."
-                : "내 도시입니다. 더 높은 건물로 업그레이드할 수 있습니다."}
-            </Typography>
-          )}
-          <Typography>{`가격: ${NumberToMoney(
-            selectedCost?.build || 0,
-          )}`}</Typography>
-          <Typography>{`통행료: ${NumberToMoney(
-            selectedCost?.toll || 0,
-          )}`}</Typography>
-          <ToggleButtonGroup
-            color="primary"
-            value={costOption}
-            exclusive
-            sx={{
-              flexWrap: "nowrap",
-              justifyContent: "center",
-              gap: 0.5,
-              maxWidth: "100%",
-              overflow: "visible",
-              mb: 1,
-              "& .MuiToggleButtonGroup-grouped": {
-                margin: "0 !important",
-                borderLeft: "1px solid rgba(74,123,165,0.2) !important",
-              },
-              "& .MuiToggleButton-root": {
-                maxHeight: 40,
-                flex: "0 0 20%",
-                minWidth: 72,
-                minHeight: 36,
-                px: 1,
-                color: "#173653",
-                border: "1px solid rgba(74,123,165,0.2) !important",
-                borderRadius: "14px !important",
-                fontWeight: 950,
-                whiteSpace: "nowrap",
-                background:
-                  "linear-gradient(180deg, rgba(255,255,255,0.98), rgba(235,247,252,0.94))",
-                boxShadow:
-                  "0 5px 0 rgba(85,139,176,0.38), inset 0 1px 0 rgba(255,255,255,0.92)",
-                transition:
-                  "transform 120ms ease, box-shadow 120ms ease, background 120ms ease",
-                "&:hover": {
-                  transform: "translateY(-1px)",
-                  background:
-                    "linear-gradient(180deg, #ffffff, rgba(226,244,252,0.98))",
-                },
-                "&.Mui-selected": {
-                  color: "#31445f",
-                  borderColor: "#c8d9f0 !important",
-                  background:
-                    "linear-gradient(135deg, #e6f8ff 0%, #e4f2ff 36%, #f7ecff 66%, #ffdff0 100%)",
-                  boxShadow:
-                    "0 6px 0 rgba(139,152,202,0.58), inset 0 1px 0 rgba(255,255,255,0.9)",
-                },
-                "&.Mui-disabled": {
-                  color: "rgba(23,54,83,0.34)",
-                  borderColor: "rgba(74,123,165,0.2) !important",
-                  background: "rgba(230,239,245,0.52)",
-                  boxShadow: "none",
-                },
-              },
-            }}
-            onChange={(event, value) => {
-              if (value) setCostOption(value);
-            }}
-          >
-            {Object.entries(tile.costs).map(([key, cost]) => {
-              const optionIndex = BUILD_ORDER.indexOf(key);
-              const disabled =
-                !canAct ||
-                (!isResort &&
-                  (isOpponentCity ||
-                    (!tile.owner && key === "landmark") ||
-                    (isOwnCity && optionIndex <= currentBuildIndex)));
-
-              return (
-                <ToggleButton
-                  key={`cost-${tile.idx}-${key}`}
-                  value={key}
-                  disabled={disabled}
-                >
-                  {cost.label}
-                </ToggleButton>
-              );
-            })}
-          </ToggleButtonGroup>
-          <Stack direction="row" gap={1}>
-            <Button
-              variant="contained"
-              color="inherit"
-              onClick={onEndTurn}
-              disabled={!canAct}
-            >
-              턴 종료
-            </Button>
-            {(!tile.owner || isOwnCity) && (
-              <Button
-                variant="contained"
-                onClick={() => onBuild(tile, costOption)}
-                disabled={!canAct || !isSelectedBuildAllowed}
-              >
-                {isOwnCity ? "업그레이드" : "구매"}
-              </Button>
-            )}
-          </Stack>
-        </>
-      )}
-    </Stack>
-  );
-};
-
-const BuildMap = memo(function BuildMap({
-  board,
-  playersByPosition,
-  tokenLayer,
-  hasColorMonopoly,
-  rollPreviewTileIdx,
-  onBlockClick,
-  getIsSelectable,
-  selectedTileIdx,
-}) {
-  return board.map((item, index) => {
-    const { block, position, side } = BOARD_TILE_LAYOUT[index];
-    const tilePlayers =
-      playersByPosition?.get(index) || EMPTY_TILE_PLAYERS;
-    const tollBonuses = [];
-    const resortTollMultiplier =
-      item.kind === "resort"
-        ? item.resortTollMultiplier || RESORT_BASE_TOLL_MULTIPLIER
-        : RESORT_BASE_TOLL_MULTIPLIER;
-
-    if (resortTollMultiplier > RESORT_BASE_TOLL_MULTIPLIER) {
-      tollBonuses.push({
-        key: "resortGrowth",
-        label: `휴양지 ${resortTollMultiplier}배`,
-        multiplier: resortTollMultiplier,
-      });
-    }
-
-    if (item.olympicHost) {
-      tollBonuses.push({ key: "olympic", label: "올림픽 2배", multiplier: 2 });
-    }
-
-    if (item.owner && hasColorMonopoly?.(item.owner.id, item.color)) {
-      tollBonuses.push({ key: "monopoly", label: "독점 2배", multiplier: 2 });
-    }
-
-    return (
-      <Block
-        key={`block-${index}`}
-        data={item}
-        position={position}
-        block={block}
-        side={side}
-        players={tilePlayers}
-        tokenLayer={tokenLayer}
-        tollBonuses={tollBonuses.length ? tollBonuses : EMPTY_TOLL_BONUSES}
-        onClick={onBlockClick}
-        isSelectable={getIsSelectable?.(item)}
-        isSelected={selectedTileIdx === item.idx}
-        isRollPreview={rollPreviewTileIdx === item.idx}
-      />
-    );
-  });
-});

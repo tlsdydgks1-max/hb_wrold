@@ -680,14 +680,43 @@ const Block = ({
   );
 };
 
+const areTokenPlayersEqual = (previousPlayers = [], nextPlayers = []) =>
+  previousPlayers === nextPlayers ||
+  (previousPlayers.length === nextPlayers.length &&
+    previousPlayers.every((previousPlayer, index) => {
+      const nextPlayer = nextPlayers[index];
+
+      return (
+        nextPlayer &&
+        previousPlayer.id === nextPlayer.id &&
+        previousPlayer.img === nextPlayer.img &&
+        previousPlayer.color === nextPlayer.color &&
+        previousPlayer.tokenLabel === nextPlayer.tokenLabel
+      );
+    }));
+
+const areTollBonusesEqual = (previousBonuses = [], nextBonuses = []) =>
+  previousBonuses === nextBonuses ||
+  (previousBonuses.length === nextBonuses.length &&
+    previousBonuses.every((previousBonus, index) => {
+      const nextBonus = nextBonuses[index];
+
+      return (
+        nextBonus &&
+        previousBonus.key === nextBonus.key &&
+        previousBonus.label === nextBonus.label &&
+        previousBonus.multiplier === nextBonus.multiplier
+      );
+    }));
+
 const areBlockPropsEqual = (previous, next) =>
   previous.data === next.data &&
   previous.position === next.position &&
   previous.block === next.block &&
   previous.side === next.side &&
-  previous.players === next.players &&
+  areTokenPlayersEqual(previous.players, next.players) &&
   previous.tokenLayer === next.tokenLayer &&
-  previous.tollBonuses === next.tollBonuses &&
+  areTollBonusesEqual(previous.tollBonuses, next.tollBonuses) &&
   previous.onClick === next.onClick &&
   previous.isSelectable === next.isSelectable &&
   previous.isSelected === next.isSelected &&
